@@ -36,10 +36,10 @@
 })();
 </script>
 
-<!-- nipplejs 0.10.2 — 通过 CDN 引入，并配本地镜像兜底。
+<!-- nipplejs 0.10.1 — 按指定 CDN 引入，并配同版本本地镜像兑底。
      CDN 以 async 加载以免弱网时阻塞首屏；本地镜像同步加载，保证游戏模块
-     启动时摇杆库一定就绪；main.js 另内置无依赖摇杆作为最后一道兜底。 -->
-<script async src="https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.min.js"></script>
+     启动时摇杆库一定就绪；main.js 另内置无依赖摇杆作为最后一道兑底。 -->
+<script async src="https://cdn.jsdelivr.net/npm/nipplejs@0.10.1/dist/nipplejs.min.js"></script>
 <script src="./js/libs/nipplejs.min.js"></script>
 </head>
 <body>
@@ -116,12 +116,13 @@
     <h1>SCP:<br><em>MIRROR-9</em></h1>
     <p class="subtitle">收容突破 / 视觉锁定协议已启动</p>
     <p class="brief">
-      它只会在无人注视时移动，而且不是滑行 —— 是每 0.1 秒一次的瞬移。<br>
+      它只会在无人注视时移动，而且不是滑行 —— 是每 0.15 秒一次的瞬移。<br>
       用准星锁定它，别移开视线；撑过 60 秒或抵达绿色撤离光圈。
     </p>
     <button id="start-btn" type="button" aria-label="开始游戏">
       <span id="start-label">开始游戏</span>
     </button>
+    <button id="settings-btn" type="button" aria-label="设置">设置</button>
     <div id="load-status">正在载入引擎 / 模型 / 音频</div>
     <div class="controls-grid">
       <div><kbd>左侧摇杆</kbd><span>移动</span></div>
@@ -133,6 +134,30 @@
     <div class="footer-note" id="lib-mode">渲染引擎 THREE.JS r160.1 · 本地模块</div>
     <!-- CC-BY 3.0 署名义务：游戏内可见标注模型作者、来源与协议 -->
     <div class="footer-note" style="margin-top:8px;line-height:1.7;text-transform:none">SCP-173 雕像模型 © <a href="https://github.com/Yni-Viar/scp-173" target="_blank" rel="noopener noreferrer" style="color:#8792a0">Yni Viar</a> · <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noopener noreferrer" style="color:#8792a0">CC BY 3.0+</a> · 全部开源资产来源与协议见 ASSET_MANIFEST.md</div>
+  </div>
+</div>
+
+<!-- ============================ 设置面板（主菜单） ======================== -->
+<div id="settings-panel" class="hidden">
+  <div class="settings-inner">
+    <h3>设置</h3>
+    <p class="settings-sub">改动即时生效 · 关闭后返回主菜单</p>
+    <label class="set-row" for="set-sens">
+      <span>视角灵敏度</span>
+      <input id="set-sens" type="range" min="30" max="220" value="100">
+      <b id="set-sens-val">100%</b>
+    </label>
+    <label class="set-row" for="set-vol">
+      <span>音量</span>
+      <input id="set-vol" type="range" min="0" max="100" value="100">
+      <b id="set-vol-val">100%</b>
+    </label>
+    <label class="set-row" for="set-shadow">
+      <span>动态阴影</span>
+      <input id="set-shadow" type="checkbox" checked>
+      <b>开</b>
+    </label>
+    <button id="settings-close" type="button">返回主菜单</button>
   </div>
 </div>
 

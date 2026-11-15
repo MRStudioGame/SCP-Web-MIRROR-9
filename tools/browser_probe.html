@@ -13,7 +13,7 @@ window.addEventListener('error', (e) => { out.textContent = 'JS_ERROR: ' + e.mes
 window.addEventListener('unhandledrejection', (e) => { out.textContent = 'REJECT: ' + e.reason; });
 const result = { glb: null, error: null };
 try {
-  const res = await fetch('../assets/models/SCP173.glb');
+  const res = await fetch('../assets/models/scp-173.glb');
   const buf = await res.arrayBuffer();
   const gltf = await new Promise((resolve, reject) =>
     new GLTFLoader().parse(buf, '', resolve, reject));

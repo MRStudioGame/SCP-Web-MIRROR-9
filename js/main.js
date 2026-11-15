@@ -1,8 +1,9 @@
 /* ============================================================================
  * SCP: MIRROR-9  /  第一人称收容行动 (Web / Three.js r160.1)
  * 中文 UI · 强制横屏 + 全屏 API · 虚拟摇杆 + 触摸视角 + 开火/手电
- * 真实开源 SCP-173.glb (CC-BY 3.0 · Yni Viar) · 严格射线观测判定
- * 173 采用 0.1s 视锥盲区瞬移（绝不平滑位移） · 30 发弹匣 / lerp 后坐力
+ * 真实开源 scp-173.glb (CC-BY 3.0 · Yni Viar) · 严格射线观测判定
+ * 显式状态机 MENU / PLAYING / GAME_OVER · 0.15s 相机背面瞬移（绝不平滑位移）
+ * 30 发弹匣 / lerp 后坐力 · nipplejs 0.10.1 左摇杆 + 右侧 touchmove
  * ==========================================================================*/
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -44,6 +45,16 @@ const joystickZone   = $('joystick-zone');
 const lookZone       = $('look-zone');
 const btnFire        = $('btn-fire');
 const btnLight       = $('btn-light');
+const settingsBtn    = $('settings-btn');
+const settingsPanel  = $('settings-panel');
+const settingsClose  = $('settings-close');
+const setSens        = $('set-sens');
+const setSensVal     = $('set-sens-val');
+const setVol         = $('set-vol');
+const setVolVal      = $('set-vol-val');
+const setShadow      = $('set-shadow');
+let lookSens = 1.0;       // 视角灵敏度倍率（设置面板实时生效）
+let masterVol = 1.0;      // 主音量倍率（设置面板实时生效）
 
 $('lib-mode').textContent = '渲染引擎 THREE.JS r160.1 · ' +
   (window.M9_LIB_MODE === 'cdn' ? 'CDN 模块' : '本地模块');
@@ -76,7 +87,7 @@ const WALL_H           = 5;
 const VIEW_DISTANCE      = 60;     // 观测视距：射线命中且 <60 判定为被注视
 const KILL_DISTANCE      = 1.5;    // 与 Camera 距离 <1.5 立即扭断脖子
 const WALK_SPEED         = 6.4;
-const TELEPORT_INTERVAL  = 0.1;    // 瞬移计时器周期（秒），由 THREE.Clock 的 deltaTime 累加
+const TELEPORT_INTERVAL  = 0.15;   // 瞬移计时器周期（秒），由 THREE.Clock 的 deltaTime 累加
 const TELEPORT_STEP      = 1.9;    // 每次瞬移向玩家逼近的距离（禁止任何平移插值）
 const DEATH_ANIM_SECONDS = 0.62;  // 扭断脖子死亡动画时长
 const EXTRACT_SECONDS  = FAST_WIN ? 3.0 : 60.0;
@@ -87,7 +98,17 @@ const SPAWN_PLAYER     = new THREE.Vector3(0, EYE_HEIGHT, 10);
 const SPAWN_ENTITY     = new THREE.Vector3(8, 0, -14);
 const EVAC_POS         = new THREE.Vector3(0, 0, -19.0);
 
-let state = 'MENU';        // MENU | PLAYING | PAUSED | DEAD | EXTRACTED
+/* ------------------------------------------------------ 游戏状态机 ------
+   MENU      : 全屏主菜单（标题 / 开始游戏 / 设置），3D 场景隐藏且暂停渲染
+   PLAYING   : 收容行动中，requestAnimationFrame 渲染循环运行
+   PAUSED    : 桌面端指针解锁暂停
+   GAME_OVER : 死亡结算，显示死亡界面与重新开始按钮
+   EXTRACTED : 撤离成功结算（复用同一结算界面）                            */
+const STATE = Object.freeze({
+  MENU: 'MENU', PLAYING: 'PLAYING', PAUSED: 'PAUSED',
+  GAME_OVER: 'GAME_OVER', EXTRACTED: 'EXTRACTED',
+});
+let state = STATE.MENU;    // 所有流转必须经 setState()
 let assetsReady = false;
 let assetsTimedOut = false;
 let loopStarted = false;
@@ -579,7 +600,7 @@ function concreteHumanoid(root) {
 /* ------- 真实开源 SCP-173 雕像（Yni Viar / CC-BY 3.0+） -------------------
    上游：https://github.com/Yni-Viar/scp-173
    原始 Statue.gltf + .bin + 3 张 2048² PBR 贴图，已由 tools/gltf_to_glb.py
-   封装成单文件 SCP173.glb。保留源贴图，仅把 PBR 调整为混凝土粗糙度 0.9。 */
+   封装成单文件 scp-173.glb。保留源贴图，仅把 PBR 调整为混凝土粗糙度 0.9。 */
 function prepareReal173(root) {
   root.traverse((o) => {
     if (!o.isMesh) return;
@@ -597,7 +618,7 @@ function prepareReal173(root) {
   root.userData.M9ConcreteColor = 'source PBR baseColorTexture (grey concrete)';
   root.userData.M9Roughness = 0.9;
   root.userData.M9PartCount = 1;
-  root.userData.M9Source = 'SCP173.glb · Yni Viar / Yni-Viar/scp-173 · CC-BY 3.0+ (real community statue)';
+  root.userData.M9Source = 'scp-173.glb · Yni Viar / Yni-Viar/scp-173 · CC-BY 3.0+ (real community statue)';
   return root;
 }
 
@@ -605,21 +626,21 @@ function prepareReal173(root) {
    程序化高精度混凝土雕像（圆柱+长方体，脖子/四肢/手指俱全，绝非人形白板）。 */
 function loadRealSCP173() {
   const loader = new GLTFLoader(manager);
-  loader.load('./assets/models/SCP173.glb',
+  loader.load('./assets/models/scp-173.glb',
     (gltf) => {
       try {
         scp173Group = gltf.scene;                    // ★ 加载成功后赋给实体组
         prepareReal173(scp173Group);
         installEntity(scp173Group);
-        document.body.setAttribute('data-m9-entity', 'SCP173.glb');
+        document.body.setAttribute('data-m9-entity', 'scp-173.glb');
         console.info('[MIRROR-9] 真实开源 SCP-173 雕像 GLB 已加载 · CC-BY 3.0+ (Yni Viar)');
       } catch (e) {
-        console.warn('[MIRROR-9] SCP173.glb 解析失败，保留程序化混凝土雕像', e);
+        console.warn('[MIRROR-9] scp-173.glb 解析失败，保留程序化混凝土雕像', e);
       }
     },
     undefined,
     (err) => {
-      console.warn('[MIRROR-9] SCP173.glb 下载失败，保留程序化混凝土雕像:', err);
+      console.warn('[MIRROR-9] scp-173.glb 下载失败，保留程序化混凝土雕像:', err);
       document.body.setAttribute('data-m9-entity', 'procedural-statue');
     });
 }
@@ -702,7 +723,7 @@ function loadEntityGLB(url, mode) {
 installEntity(buildSCP173());
 if (USE_HUMANOID) loadEntityGLB('./assets/models/humanoid.glb', 'humanoid');
 else if (USE_XBOT)  loadEntityGLB('./assets/models/Xbot.glb', 'xbot');
-else if (USE_GLB)   loadEntityGLB('./assets/models/SCP173.glb', 'glb');
+else if (USE_GLB)   loadEntityGLB('./assets/models/scp-173.glb', 'glb');
 else loadRealSCP173();        // 默认：真实开源 SCP-173 雕像
 
 /* ------------------------------------------------- 第一人称持枪 ViewModel */
@@ -867,7 +888,7 @@ function playOneShot(key, volume) {
   try {
     const base = sounds[key];
     const a = base.cloneNode();
-    a.volume = volume !== undefined ? volume : base.volume;
+    a.volume = (volume !== undefined ? volume : base.volume) * masterVol;
     a.play().catch(() => {});
   } catch (_) { /* 音频可选 */ }
 }
@@ -878,7 +899,7 @@ let scrapeCtx = null;
 function playConcreteScrape() {
   try {
     const a = sounds.scrape.cloneNode();
-    a.loop = false; a.volume = 0.95; a.currentTime = 0;
+    a.loop = false; a.volume = 0.95 * masterVol; a.currentTime = 0;
     const p = a.play();
     if (p && typeof p.catch === 'function') p.catch(() => {});
     setTimeout(() => { try { a.pause(); } catch (_) {} }, 900);
@@ -897,7 +918,7 @@ function playConcreteScrape() {
     const src = ctx.createBufferSource(); src.buffer = buf;
     const filt = ctx.createBiquadFilter();
     filt.type = 'bandpass'; filt.frequency.value = 380; filt.Q.value = 0.7;
-    const gain = ctx.createGain(); gain.gain.value = 0.42;
+    const gain = ctx.createGain(); gain.gain.value = 0.42 * masterVol;
     src.connect(filt); filt.connect(gain); gain.connect(ctx.destination);
     src.start();
   } catch (_) { /* 音频可选 */ }
@@ -942,22 +963,22 @@ document.addEventListener('keyup', (e) => {
 });
 document.addEventListener('mousemove', (e) => {
   if (state !== 'PLAYING' || isTouchDevice) return;
-  yaw   -= e.movementX * 0.0022;
-  pitch -= e.movementY * 0.0022;
+  yaw   -= e.movementX * 0.0022 * lookSens;
+  pitch -= e.movementY * 0.0022 * lookSens;
   pitch = Math.max(-1.4, Math.min(1.4, pitch));
 });
 document.addEventListener('contextmenu', (e) => e.preventDefault());
 
 controls.addEventListener('unlock', () => {
   if (state === 'PLAYING' && !isTouchDevice && !SELFTEST) {
-    state = 'PAUSED';
+    setState(STATE.PAUSED);
     pauseOverlay.classList.remove('hidden');
     stopAmbience();
   }
 });
 controls.addEventListener('lock', () => {
   if (state === 'PAUSED') {
-    state = 'PLAYING';
+    setState(STATE.PLAYING);
     pauseOverlay.classList.add('hidden');
     clock.getDelta();
   }
@@ -1016,9 +1037,9 @@ function initTouchLook() {
       if (t.identifier !== active) continue;
       const dx = t.clientX - lastX, dy = t.clientY - lastY;
       lastX = t.clientX; lastY = t.clientY;
-      const dYaw = dx * 0.0042;
+      const dYaw = dx * 0.0042 * lookSens;
       yaw   -= dYaw;
-      pitch -= dy * 0.0042;
+      pitch -= dy * 0.0042 * lookSens;
       pitch = Math.max(-1.4, Math.min(1.4, pitch));
       window.__M9_TOUCH_YAW_DELTA += Math.abs(dYaw);
     }
@@ -1032,9 +1053,9 @@ function initTouchLook() {
   lookZone.addEventListener('mousedown', (e) => { dragging = true; mx = e.clientX; my = e.clientY; });
   window.addEventListener('mousemove', (e) => {
     if (!dragging) return;
-    const dYaw = (e.clientX - mx) * 0.0042;
+    const dYaw = (e.clientX - mx) * 0.0042 * lookSens;
     yaw -= dYaw;
-    pitch = Math.max(-1.4, Math.min(1.4, pitch - (e.clientY - my) * 0.0042));
+    pitch = Math.max(-1.4, Math.min(1.4, pitch - (e.clientY - my) * 0.0042 * lookSens));
     window.__M9_TOUCH_YAW_DELTA += Math.abs(dYaw);
     mx = e.clientX; my = e.clientY;
   });
@@ -1066,10 +1087,13 @@ function initTouchControls() {
         position: { left: '50%', top: '50%' },
         color: 'rgba(255,255,255,0.55)', size: 118, restOpacity: 0.75,
       });
+      // nipplejs 'move' 事件 → joy.x / joy.y → updatePlayer() 映射到相机 XZ 平面位移。
+      // 相机前向 _fwd = (-sin yaw, 0, -cos yaw)，右向 _rightV = (cos yaw, 0, -sin yaw)，
+      // 二者均为水平向量，因此摇杆只驱动 XZ 平面移动，不产生 Y 轴位移。
       j.on('move', (_evt, data) => {
         if (!data || !data.vector) return;
-        joy.x = data.vector.x;
-        joy.y = data.vector.y;
+        joy.x = data.vector.x;   // 左右 → XZ 平面的横向分量
+        joy.y = data.vector.y;   // 上下 → XZ 平面的前后分量
       });
       j.on('end', () => { joy.x = 0; joy.y = 0; });
       window.__M9_JOYSTICK = j;
@@ -1096,6 +1120,40 @@ function initTouchControls() {
   }
 }
 if (isTouchDevice) initTouchControls();
+
+/* ------------------------------------------------ 设置面板（主菜单二级 UI） */
+/* 三个选项都直接改动运行时变量，即时生效；不写入 localStorage，避免跨会话污染。 */
+function applySettings() {
+  setSensVal.textContent = Math.round(lookSens * 100) + '%';
+  setVolVal.textContent  = Math.round(masterVol * 100) + '%';
+  const shadowOn = !!setShadow.checked;
+  if (renderer.shadowMap.enabled !== shadowOn) {
+    renderer.shadowMap.enabled = shadowOn;
+    scene.traverse((o) => {
+      if (!o.isMesh) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) if (m) m.needsUpdate = true;
+    });
+  }
+  sounds.alarm.volume = 0.10 * masterVol;
+}
+if (settingsBtn && settingsPanel) {
+  settingsBtn.addEventListener('click', () => {
+    settingsPanel.classList.remove('hidden');
+    applySettings();
+  });
+  settingsClose.addEventListener('click', () => settingsPanel.classList.add('hidden'));
+  setSens.addEventListener('input', () => {
+    lookSens = Number(setSens.value) / 100;
+    applySettings();
+  });
+  setVol.addEventListener('input', () => {
+    masterVol = Number(setVol.value) / 100;
+    applySettings();
+  });
+  setShadow.addEventListener('change', applySettings);
+  applySettings();
+}
 
 /* ------------------------------------------------------------ blink cycle  */
 /* 眨眼只做视觉氛围与 HUD 提示，不再覆盖 Raycaster 的观测判定：
@@ -1278,6 +1336,30 @@ function enterFullscreen() {
 }
 
 /* ----------------------------------------------------------- state machine */
+/* 集中式状态流转：所有 state 变更必须经过此函数。
+   - MENU      : 全屏主菜单；隐藏 3D 画布、不启动任何 rAF 渲染循环
+   - PLAYING   : 显示 HUD / 触控层；渲染循环由 startGame() 启动
+   - GAME_OVER : 显示死亡界面与重新开始按钮
+   - EXTRACTED : 撤离成功结算（复用同一界面）
+   - PAUSED    : 桌面端指针解锁暂停                                       */
+function setState(next) {
+  state = next;
+  document.body.dataset.m9State = next;          // 便于自动化验证当前状态
+  const inMenu  = next === STATE.MENU;
+  const playing = next === STATE.PLAYING;
+  const over    = next === STATE.GAME_OVER || next === STATE.EXTRACTED;
+
+  stage.classList.toggle('hidden', inMenu);      // ★ MENU：隐藏 3D 场景
+  mainMenu.style.display = inMenu ? '' : 'none';
+  const showHud = playing || next === STATE.PAUSED;
+  hud.classList.toggle('hidden', !showHud);
+  if (isTouchDevice) touchControls.classList.toggle('hidden', !showHud);
+  gameOver.classList.toggle('active', over);
+  pauseOverlay.classList.toggle('hidden', next !== STATE.PAUSED);
+
+  if (window.__M9_SELFTEST) window.__M9_SELFTEST.stateName = next;
+}
+
 function clearDecals() {
   for (const d of decals) {
     scene.remove(d.mesh); d.mesh.geometry.dispose(); d.mesh.material.dispose();
@@ -1328,7 +1410,7 @@ function startGame() {
   hud.classList.remove('hidden');
   if (isTouchDevice) touchControls.classList.remove('hidden');
   resetRun();
-  state = 'PLAYING';
+  setState(STATE.PLAYING);
   startAmbience();
   queueSubtitles();
   showToast('// 收容突破 · 保持视线接触', 2.0);
@@ -1338,7 +1420,7 @@ function startGame() {
   if (!loopStarted) {
     loopStarted = true;
     clock.start();
-    requestAnimationFrame(loop);
+    requestAnimationFrame(animate);
   }
   if (AUTOSTART) setTimeout(() => { window.__M9_AUTOSTART_STOP = true; }, 400);
 }
@@ -1347,7 +1429,7 @@ startBtn.addEventListener('click', startGame);
 resumeBtn.addEventListener('click', () => {
   if (state !== 'PAUSED') return;
   enterFullscreen();
-  state = 'PLAYING';
+  setState(STATE.PLAYING);
   pauseOverlay.classList.add('hidden');
   clock.getDelta();
   startAmbience();
@@ -1357,15 +1439,15 @@ resumeBtn.addEventListener('click', () => {
 restartBtn.addEventListener('click', () => {
   enterFullscreen();
   resetRun();
-  state = 'PLAYING';
+  setState(STATE.PLAYING);
   startAmbience();
   queueSubtitles();
   if (!isTouchDevice && !SELFTEST) { try { controls.lock(); } catch (_) {} }
 });
 
 function PlayerDeath() {
-  if (state === 'DEAD' || state === 'EXTRACTED') return;
-  state = 'DEAD';
+  if (state === 'GAME_OVER' || state === 'EXTRACTED') return;
+  setState(STATE.GAME_OVER);
   deathAnimT = 0;                    // 立即触发扭断脖子死亡动画
   playOneShot('neckSnap', 0.95);
   stopAmbience();
@@ -1381,8 +1463,8 @@ function PlayerDeath() {
 }
 
 function PlayerExtracted(reason) {
-  if (state === 'DEAD' || state === 'EXTRACTED') return;
-  state = 'EXTRACTED';
+  if (state === 'GAME_OVER' || state === 'EXTRACTED') return;
+  setState(STATE.EXTRACTED);
   stopAmbience();
   endFire();
   hideSubtitles();
@@ -1454,16 +1536,18 @@ function updatePlayer(delta) {
   camera.position.y = EYE_HEIGHT;
 }
 
-/* -------------------------------------- 核心观测判定 + 盲区瞬移（严禁平移） -- */
-/* 1) THREE.Raycaster 从屏幕中心 (0,0) 发射；命中实体且距离 <60 → 完全冻结，零位移。
-   2) 未命中 → 用 THREE.Clock 的 deltaTime 累加瞬移计时器，每 0.1 秒计算当前
-      视锥体盲区，用 position.copy 瞬间移动到更靠近玩家的位置。
-      全程不使用 lerp / addScaledVector / 速度积分，因此不存在任何滑行。
-   3) 每次瞬移播放巨大混凝土摩擦声；距离 <1.5 → 扭断脖子 + Game Over。 */
-function computeBlindSpotTarget(out) {
-  // 视锥水平半角由相机 fov 与 aspect 反推；盲区 = |偏角| > halfH 的侧后区域
-  const halfV = THREE.MathUtils.degToRad(camera.fov * 0.5);
-  const halfH = Math.atan(Math.tan(halfV) * Math.max(1, camera.aspect));
+/* ------------------------------ 核心观测判定 + 相机背面瞬移（严禁平移） -- */
+/* 1) 每一帧：THREE.Raycaster 从屏幕中心 (0,0) 发射。
+      intersects.length > 0 && intersects[0].distance < 60 → isObserved = true，
+      此时 173 的移动速度必须严格归零（entityVelocity = 0，且不做任何位移）。
+   2) isObserved = false → 用 THREE.Clock 的 deltaTime 累加瞬移计时器，
+      每 0.15 秒直接计算「玩家相机背面」的位置，并用 position.copy 瞬间移动。
+      每次瞬移同时缩短与玩家的距离，直至 <1.5 触发扭断脖子 + GAME_OVER。
+      全程不使用 lerp / addScaledVector / 速度积分 → 绝无平滑滑行。
+   3) 每次瞬移播放巨大混凝土摩擦声。                                       */
+function computeBehindCameraTarget(out) {
+  // 相机水平前向；背面方向 = -前向。加极小侧向扰动避免每帧完全重合，
+  // 但落点始终位于相机背面半球（|偏角| 约 160°~180°，远超水平半视场）。
   camera.getWorldDirection(_camFwd);
   _camFwd.y = 0;
   if (_camFwd.lengthSq() < 1e-6) _camFwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
@@ -1475,13 +1559,9 @@ function computeBlindSpotTarget(out) {
   const nextDist = Math.max(KILL_DISTANCE * 0.72,
                             Math.hypot(dx, dz) - TELEPORT_STEP);
 
-  // 落在视锥边缘外侧（刚离开视野，玩家快速回头仍有机会重新锁定），
-  // 而非直接瞬移到正背后导致完全无解。
-  const minA = Math.min(Math.PI, halfH + 0.38);
-  const theta = minA + Math.random() * Math.min(1.15, Math.PI - minA);
-  const sign = Math.random() < 0.5 ? -1 : 1;
-  const dirX = _camFwd.x * Math.cos(theta) + _camRight.x * Math.sin(theta) * sign;
-  const dirZ = _camFwd.z * Math.cos(theta) + _camRight.z * Math.sin(theta) * sign;
+  const theta = Math.PI + (Math.random() - 0.5) * 0.34;   // 正背面 ±0.17 rad
+  const dirX = _camFwd.x * Math.cos(theta) + _camRight.x * Math.sin(theta);
+  const dirZ = _camFwd.z * Math.cos(theta) + _camRight.z * Math.sin(theta);
 
   const lim = ROOM / 2 - 1.4;
   out.set(
@@ -1493,7 +1573,7 @@ function computeBlindSpotTarget(out) {
 }
 
 function teleportOnce() {
-  computeBlindSpotTarget(_teleportTarget);
+  computeBehindCameraTarget(_teleportTarget);
   // ★ 唯一允许的位移方式：整向量瞬时拷贝（绝无插值/平移）
   scp173Group.position.copy(_teleportTarget);
   scp173Group.lookAt(camera.position.x, scp173Group.position.y, camera.position.z);
@@ -1527,12 +1607,12 @@ function updateEntity(delta) {
   }
 
   if (isObserved) {
-    // 被注视：速度归零、计时器清零；位置/朝向/动画一律不更新 → 零位移冻结
+    // ★ 被注视：173 的移动速度严格归零，位置/朝向/动画全部不更新 → 零位移冻结
     entityVelocity.set(0, 0, 0);
     teleportTimer = 0;
     sounds.scrape.volume = Math.max(0, sounds.scrape.volume - delta * 2.0);
   } else {
-    // 未被注视：Clock 的 deltaTime 累加，每 0.1s 触发一次视锥盲区瞬移
+    // 未被注视：Clock 的 deltaTime 累加，每 0.15s 触发一次「相机背面」瞬移
     teleportTimer += delta;
     while (teleportTimer >= TELEPORT_INTERVAL) {
       teleportTimer -= TELEPORT_INTERVAL;
@@ -1630,7 +1710,7 @@ function updateDecals(delta) {
 }
 
 /* ------------------------------------------------------------- game loop   */
-function loop() {
+function animate() {
   const delta = Math.min(clock.getDelta(), 0.05);
   if (state === 'PLAYING') applyProbeLook();
   applyLook();
@@ -1646,7 +1726,7 @@ function loop() {
     updateHud(delta);
     updateDecals(delta);
     checkWin();
-  } else if (state === 'DEAD') {
+  } else if (state === 'GAME_OVER') {
     updateDeathAnimation(delta);       // 结算界面下继续播放扭断脖子动画
   }
   animEvac(delta);
@@ -1661,7 +1741,7 @@ function loop() {
     st.survival = Number(survivalTime.toFixed(2));
     st.yaw = Number(yaw.toFixed(3));
     st.posZ = Number(camera.position.z.toFixed(2));
-    st.death = state === 'DEAD';
+    st.death = state === 'GAME_OVER';
     st.win = state === 'EXTRACTED';
     st.bulletHoles = decals.length;
     st.touchUI = !touchControls.classList.contains('hidden');
@@ -1682,7 +1762,7 @@ function loop() {
     st.magSize = MAG_SIZE;
     st.teleports = teleportCount;
     st.teleportInterval = TELEPORT_INTERVAL;
-    st.deathAnim = state === 'DEAD' ? Number((deathAnimT / DEATH_ANIM_SECONDS).toFixed(2)) : -1;
+    st.deathAnim = state === 'GAME_OVER' ? Number((deathAnimT / DEATH_ANIM_SECONDS).toFixed(2)) : -1;
     st.flashlightTargetParent = flashlight.target.parent === camera ? 'camera' : 'other';
     st.sceneHasCamera = camera.parent === scene;
     st.fullscreenCalls = fullscreenCalls;
@@ -1709,33 +1789,16 @@ function loop() {
   }
   const probeState = window.__M9_SELFTEST;
   const stop = (probeState &&
-    (state === 'DEAD' || state === 'EXTRACTED' || probeState.frames > 600)) ||
+    (state === 'GAME_OVER' || state === 'EXTRACTED' || probeState.frames > 600)) ||
     (AUTOSTART && window.__M9_AUTOSTART_STOP);
-  if (!stop) requestAnimationFrame(loop);
+  if (!stop) requestAnimationFrame(animate);
 }
 
-/* ------------------------------- 菜单阶段的 3D 预览（暗化模糊背景） ------ */
-let lastPreview = performance.now();
-let previewFrames = 0;
-function previewLoop() {
-  if (state !== 'MENU') return;           // Start 之后交给游戏主循环
-  previewFrames++;
-  // 无头自检时预览只渲染少量帧即可，避免软件渲染拖垮整轮验证
-  if (!(PROBE && previewFrames > 10)) requestAnimationFrame(previewLoop);
-  const now = performance.now();
-  const delta = Math.min((now - lastPreview) / 1000, 0.05);
-  lastPreview = now;
-  menuT += delta;
-  camera.position.set(Math.sin(menuT * 0.16) * 2.6, EYE_HEIGHT + 0.14,
-                      11.5 + Math.cos(menuT * 0.16) * 1.2);
-  yaw = Math.sin(menuT * 0.2) * 0.30;
-  pitch = -0.055;
-  applyLook();
-  camera.updateMatrixWorld(true);
-  animEvac(delta);
-  renderer.render(scene, camera);
-}
-requestAnimationFrame(previewLoop);
+/* ------------------------------- MENU 阶段：3D 渲染完全暂停 ---------------
+   规格要求：一进游戏只显示主菜单，3D 场景隐藏且暂停渲染。
+   因此这里刻意**不启动任何 requestAnimationFrame**；唯一的渲染循环是
+   animate()，它只由 startGame() 在点击「开始游戏」进入 PLAYING 后启动。 */
+setState(STATE.MENU);   // 应用菜单态 UI：隐藏 stage / 显示主菜单 / 隐藏 HUD
 
 /* ---------------------------------------------------- 屏幕方向 / 尺寸适配  */
 function updateOrientation() {
@@ -1771,14 +1834,14 @@ if (SELFTEST) {
   resetRun();
   queueSubtitles();
   blinkPeriod = 1.6; blinkClock = 1.6;
-  state = 'PLAYING';
+  setState(STATE.PLAYING);
   loopStarted = true;
   clock.start();
   controls.isLocked = true;
   document.dispatchEvent(new MouseEvent('mousedown', { button: 0 }));
   controls.isLocked = false;
   if (FORCE_TOUCH) joy.y = EVAC_TEST ? 0 : 1;   // 验证摇杆 -> Vector3 移动路径
-  requestAnimationFrame(loop);
+  requestAnimationFrame(animate);
   if (RELOAD_TEST) setTimeout(() => { try { startReload(); } catch (_) {} }, 1200);
 }
 

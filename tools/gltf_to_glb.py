@@ -21,7 +21,7 @@ import struct
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "tools", "_src173")
-OUT = os.path.join(ROOT, "assets", "models", "SCP173.glb")
+OUT = os.path.join(ROOT, "assets", "models", "scp-173.glb")
 
 
 def align4(buf):

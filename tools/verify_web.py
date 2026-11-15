@@ -43,7 +43,7 @@ def http_ok(port):
         "index.html", "style.css", "js/main.js", "js/libs/three.module.js",
         "js/libs/GLTFLoader.js", "js/libs/PointerLockControls.js",
         "js/libs/nipplejs.min.js", "js/utils/BufferGeometryUtils.js",
-        "assets/models/SCP173.glb", "assets/models/humanoid.glb",
+        "assets/models/scp-173.glb", "assets/models/humanoid.glb",
         "assets/sounds/gunshot.ogg",
         "assets/sounds/neck_snap.ogg", "assets/sounds/alarm.ogg",
         "assets/sounds/concrete_scrape.ogg", "assets/textures/concrete_color.jpg",

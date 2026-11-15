@@ -77,7 +77,7 @@ def sketchfab():
     try:
         blob = get(dl, timeout=40)
         if blob[:4] == b"glTF":
-            save("assets/models/SCP173.glb", blob, dl,
+            save("assets/models/scp-173.glb", blob, dl,
                  str(lic.get("label", "see Sketchfab")), "Sketchfab original GLB")
         else:
             blocked("Sketchfab original GLB", dl, "unexpected payload, not a GLB")
@@ -227,7 +227,7 @@ def write_manifest():
         "without a personal Sketchfab API token, and no such token exists in the "
         "MR Studio handover documents. Therefore no Sketchfab binary was downloaded.",
         "",
-        "`assets/models/SCP173.glb` is a genuinely loadable glTF 2.0 binary produced "
+        "`assets/models/scp-173.glb` is a genuinely loadable glTF 2.0 binary produced "
         "by `tools/make_scp173_glb.py` (original procedural sculpture geometry), "
         "not a renamed Sketchfab file. It is the GLB the game actually loads.",
         "",
