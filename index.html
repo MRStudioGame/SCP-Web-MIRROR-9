@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta name="theme-color" content="#05070a">
 <meta name="description" content="SCP: MIRROR-9 — 第一人称收容行动。保持视线接触，寻找撤离点。">
@@ -52,7 +52,7 @@
 <div id="orientation-overlay">
   <div class="rotate-icon">↻</div>
   <h2>请将手机横屏<br>以获得最佳体验</h2>
-  <p>旋转设备后自动继续 · 建议开启全屏 / 添加到主屏幕</p>
+  <p>旋转设备后自动继续 · 点击「开始收容行动」将自动进入全屏</p>
 </div>
 
 <!-- ============================ 游戏 HUD ============================ -->
@@ -67,7 +67,7 @@
     <span id="observe-badge" class="badge unseen">未观测 · 移动中</span>
   </div>
 
-  <!-- 剧情字幕 -->
+  <!-- 顶部警告条：小字、上移、5 秒后自动淡出（opacity:0 / transition:.5s） -->
   <div id="subtitle-bar" class="hidden"><span id="subtitle-text"></span></div>
 
   <div id="evac-hint">
@@ -115,7 +115,7 @@
     <h1>SCP:<br><em>MIRROR-9</em></h1>
     <p class="subtitle">收容突破 / 视觉锁定协议已启动</p>
     <p class="brief">
-      它只会在无人注视时移动。用准星锁定它，别眨眼。<br>
+      它只会在无人注视时移动。用准星锁定它，别移开视线。<br>
       撑过 60 秒，或抵达地图边缘的绿色撤离光圈。
     </p>
     <button id="start-btn" type="button">
