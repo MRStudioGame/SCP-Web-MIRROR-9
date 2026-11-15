@@ -201,7 +201,7 @@ body.portrait #orientation-overlay { display: flex; }
   font-size: 10px; letter-spacing: .22em;
   color: rgba(255,255,255,.2); pointer-events: none;
 }
-#btn-fire, #btn-light {
+#btn-fire, #btn-light, #btn-reload {
   position: absolute; pointer-events: auto; touch-action: none;
   border-radius: 50%; color: #fff; font-family: var(--sans);
   font-weight: 900; letter-spacing: .06em;
@@ -225,7 +225,14 @@ body.portrait #orientation-overlay { display: flex; }
   box-shadow: 0 0 24px rgba(90,140,200,.4), inset 0 -6px 16px rgba(0,0,0,.35);
   z-index: 3;
 }
-#btn-fire.pressed { transform: scale(.93); filter: brightness(1.35); }
+#btn-reload {
+  right: calc(150px + var(--sar)); bottom: calc(22px + var(--sab));
+  width: 76px; height: 76px; font-size: 15px; z-index: 3;
+  background: radial-gradient(circle at 36% 30%, #8b7440, #3a2f18 78%);
+  border: 3px solid rgba(232,200,130,.8);
+  box-shadow: 0 0 22px rgba(210,170,80,.38), inset 0 -6px 16px rgba(0,0,0,.35);
+}
+#btn-fire.pressed, #btn-reload.pressed { transform: scale(.93); filter: brightness(1.35); }
 #btn-light.off { filter: grayscale(.75) brightness(.6); }
 #btn-light::after { content: "开"; position: absolute; right: 8px; top: 6px; font-size: 10px; font-weight: 700; opacity: .8; }
 #btn-light.off::after { content: "关"; }
@@ -373,10 +380,60 @@ kbd {
   .hud-hint { display: none; }
   #hud-bottom { bottom: calc(6px + var(--sab)); }
 }
+@media (max-height: 480px) {
+  #btn-reload { width: 64px; height: 64px; font-size: 13px; right: calc(124px + var(--sar)); bottom: calc(14px + var(--sab)); }
+}
 @media (max-width: 700px) {
   .controls-grid { grid-template-columns: repeat(2, 1fr); }
   #hud-left, #hud-right { bottom: calc(52px + var(--sab)); }
   .hud-hint { display: none; }
   #subtitle-bar { max-width: calc(100vw - 32px - var(--sal) - var(--sar)); }
   #evac-hint { top: calc(72px + var(--sat)); }
+}
+
+/* ======================= 刘海屏安全区统一防护 ===========================
+   所有顶层 UI 容器显式携带 env(safe-area-inset-*)，避免被挖孔屏、
+   圆角、Home Indicator 遮挡。原有各控件已用 --sat/--sar/--sab/--sal
+   计算偏移；此处为容器级兑底，二者叠加不冲突（box-sizing:border-box）。 */
+:root {
+  --safe-pad-top: env(safe-area-inset-top, 0px);
+  --safe-pad-right: env(safe-area-inset-right, 0px);
+  --safe-pad-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-pad-left: env(safe-area-inset-left, 0px);
+}
+#hud, #touch-controls {
+  padding: var(--safe-pad-top) var(--safe-pad-right)
+           var(--safe-pad-bottom) var(--safe-pad-left);
+}
+#toast {
+  top: calc(26% + var(--safe-pad-top));
+  max-width: calc(100vw - var(--safe-pad-left) - var(--safe-pad-right) - 32px);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.crosshair {
+  margin: var(--safe-pad-top) var(--safe-pad-right)
+          var(--safe-pad-bottom) var(--safe-pad-left);
+}
+#blink, #muzzle-flash {
+  padding-top: var(--safe-pad-top);
+  padding-bottom: var(--safe-pad-bottom);
+}
+/* 这些容器在各自原始规则里已按 --sat/--sar/--sab/--sal 计算偏移，
+   此处沿用原有留白值，仅统一改用 safe-area 变量，避免破坏既有版式。 */
+#main-menu {
+  padding: calc(12px + var(--safe-pad-top)) calc(12px + var(--safe-pad-right))
+           calc(12px + var(--safe-pad-bottom)) calc(12px + var(--safe-pad-left));
+}
+#game-over, #pause-overlay {
+  padding: calc(16px + var(--safe-pad-top)) calc(16px + var(--safe-pad-right))
+           calc(16px + var(--safe-pad-bottom)) calc(16px + var(--safe-pad-left));
+}
+#orientation-overlay {
+  padding: calc(24px + var(--safe-pad-top)) calc(24px + var(--safe-pad-right))
+           calc(24px + var(--safe-pad-bottom)) calc(24px + var(--safe-pad-left));
+}
+#boot-error {
+  left: calc(20px + var(--safe-pad-left));
+  right: calc(20px + var(--safe-pad-right));
+  bottom: calc(20px + var(--safe-pad-bottom));
 }

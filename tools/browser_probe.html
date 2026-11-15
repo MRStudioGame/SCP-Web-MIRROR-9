@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>M9 browser probe</title>
+<script type="importmap">
+{"imports":{"three":"../js/libs/three.module.js","three/addons/loaders/GLTFLoader.js":"../js/libs/GLTFLoader.js","three/addons/utils/BufferGeometryUtils.js":"../js/utils/BufferGeometryUtils.js"}}
+</script></head>
+<body><pre id="out">PENDING</pre>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+const out = document.getElementById('out');
+out.textContent = 'MODULE_STARTED';
+window.addEventListener('error', (e) => { out.textContent = 'JS_ERROR: ' + e.message; });
+window.addEventListener('unhandledrejection', (e) => { out.textContent = 'REJECT: ' + e.reason; });
+const result = { glb: null, error: null };
+try {
+  const res = await fetch('../assets/models/SCP173.glb');
+  const buf = await res.arrayBuffer();
+  const gltf = await new Promise((resolve, reject) =>
+    new GLTFLoader().parse(buf, '', resolve, reject));
+  let meshes = 0, verts = 0;
+  const box = new THREE.Box3().setFromObject(gltf.scene);
+  const size = new THREE.Vector3(); box.getSize(size);
+  gltf.scene.traverse(o => { if (o.isMesh) { meshes++; verts += o.geometry.attributes.position.count; } });
+  const mats = [];
+  gltf.scene.traverse(o => { if (o.isMesh) mats.push({
+    map: !!o.material.map, normalMap: !!o.material.normalMap,
+    roughnessMap: !!o.material.roughnessMap, roughness: o.material.roughness }); });
+  result.glb = { bytes: buf.byteLength, meshes, verts,
+                 bbox: [size.x, size.y, size.z].map(v => +v.toFixed(2)), mats };
+} catch (e) { result.error = String(e && e.message || e); }
+out.textContent = JSON.stringify(result);
+document.title = result.glb ? 'M9_PROBE_OK' : 'M9_PROBE_FAIL';
+</script></body></html>

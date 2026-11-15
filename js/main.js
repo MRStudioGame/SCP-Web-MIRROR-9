@@ -1,7 +1,8 @@
 /* ============================================================================
  * SCP: MIRROR-9  /  第一人称收容行动 (Web / Three.js r160.1)
  * 中文 UI · 强制横屏 + 全屏 API · 虚拟摇杆 + 触摸视角 + 开火/手电
- * 枪械 ViewModel · 程序化混凝土人形 SCP-173 · 严格射线观测判定
+ * 真实开源 SCP-173.glb (CC-BY 3.0 · Yni Viar) · 严格射线观测判定
+ * 173 采用 0.1s 视锥盲区瞬移（绝不平滑位移） · 30 发弹匣 / lerp 后坐力
  * ==========================================================================*/
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -56,6 +57,7 @@ const EVAC_TEST    = QS.get('evac') === '1';
 const RELOAD_TEST  = QS.get('reloadtest') === '1';
 const USE_GLB      = QS.get('glb') === '1';
 const USE_HUMANOID = QS.get('humanoid') === '1';
+const USE_XBOT     = QS.get('xbot') === '1';
 const AUTOSTART    = QS.get('autostart') === '1';
 const PROBE        = QS.has('probe');   // 无头自检：达到条件后停止 rAF，避免空转
 
@@ -71,10 +73,12 @@ document.body.classList.toggle('touch-device', isTouchDevice);
 const EYE_HEIGHT       = 1.7;
 const ROOM             = 44;
 const WALL_H           = 5;
-const VIEW_DISTANCE    = 60;     // 观测视距，与射线判定一致
-const KILL_DISTANCE    = 1.5;
-const WALK_SPEED       = 6.4;
-const ENTITY_MAX_SPEED = 11.0;
+const VIEW_DISTANCE      = 60;     // 观测视距：射线命中且 <60 判定为被注视
+const KILL_DISTANCE      = 1.5;    // 与 Camera 距离 <1.5 立即扭断脖子
+const WALK_SPEED         = 6.4;
+const TELEPORT_INTERVAL  = 0.1;    // 瞬移计时器周期（秒），由 THREE.Clock 的 deltaTime 累加
+const TELEPORT_STEP      = 1.9;    // 每次瞬移向玩家逼近的距离（禁止任何平移插值）
+const DEATH_ANIM_SECONDS = 0.62;  // 扭断脖子死亡动画时长
 const EXTRACT_SECONDS  = FAST_WIN ? 3.0 : 60.0;
 const EVAC_RADIUS      = 2.8;
 const CENTRE           = new THREE.Vector2(0, 0);   // 屏幕中心 (0,0) NDC
@@ -91,9 +95,11 @@ let survivalTime = 0;
 let isObserved = false;    // 每帧由 Raycaster 重新判定
 let isBlinking = false;
 let flashlightOn = true;
-let yaw = 0, pitch = 0;
-let recoil = 0;
+let yaw = 0, pitch = 0, roll = 0;      // roll 用于扭断脖子时的相机侧倾
+let recoil = 0, recoilKick = 0;       // recoilKick = 开火脉冲，用 MathUtils.lerp 做后坐力插值
 let menuT = 0;
+let teleportTimer = 0, teleportCount = 0;
+let deathAnimT = -1, deathPitch = 0, deathDrop = 0;
 let probeLookedAway = false;
 let fullscreenCalls = 0;
 window.__M9_TOUCH_YAW_DELTA = 0;
@@ -122,7 +128,7 @@ const clock = new THREE.Clock(false);
 const raycaster = new THREE.Raycaster();
 raycaster.far = VIEW_DISTANCE;
 
-function applyLook() { camera.rotation.set(pitch, yaw, 0, 'YXZ'); }
+function applyLook() { camera.rotation.set(pitch + deathPitch, yaw, roll, 'YXZ'); }
 applyLook();
 
 /* ----------------------------------------------------------------- lights */
@@ -149,6 +155,18 @@ flashlightTarget.position.set(0, -0.02, -1);
 camera.add(flashlightTarget);
 flashlight.target = flashlightTarget;
 
+/* 强制保证手电筒三要素：SpotLight 是 Camera 子物体、castShadow 开启、
+   scene.add(camera) 已执行（否则相机下的光源不参与场景图，光效完全无效）。 */
+function ensureFlashlightRig() {
+  if (camera.parent !== scene) scene.add(camera);
+  if (flashlight.parent !== camera) camera.add(flashlight);
+  if (flashlight.target.parent !== camera) camera.add(flashlight.target);
+  flashlight.castShadow = true;
+  flashlight.visible = flashlightOn;
+  return camera.parent === scene && flashlight.parent === camera && flashlight.castShadow;
+}
+ensureFlashlightRig();
+
 const nearFill = new THREE.PointLight(0xa9c6ee, 3.2, 9, 1.4);
 nearFill.position.set(0, -0.2, 0.2);
 camera.add(nearFill);
@@ -164,12 +182,12 @@ setTimeout(() => { if (!assetsReady) { assetsTimedOut = true; markAssetsReady();
 
 // Start 按钮从一开始就可用：任何资源超时都不会把玩家锁在菜单外。
 startBtn.disabled = false;
-startLabel.textContent = '开始收容行动';
+startLabel.textContent = '开始游戏';
 
 function markAssetsReady() {
   if (assetsReady) return;
   assetsReady = true;
-  startLabel.textContent = '开始收容行动';
+  startLabel.textContent = '开始游戏';
   loadStatus.textContent = assetsTimedOut
     ? '资源就绪（部分可选资源超时 · 已启用降级）'
     : '资源已就绪 · ' + (window.M9_LIB_MODE === 'cdn' ? 'CDN' : '本地') + '模块';
@@ -326,11 +344,11 @@ function animEvac(delta) {
 /* ------------------------------------------- SCP-173：精细混凝土人形      */
 /* THREE.Group + BoxGeometry / CylinderGeometry，主材质 0x777777 / roughness 0.9。
    粗壮脖子、分节四肢、手掌五指、肋骨、眉骨、经典橙色涂料、钢筋与裂纹。 */
-let scp173 = null;
+let scp173Group = null;
 const entityVelocity = new THREE.Vector3();
-const _prev   = new THREE.Vector3();
-const _step   = new THREE.Vector3();
-const _target = new THREE.Vector3();
+const _teleportTarget = new THREE.Vector3();   // 视锥盲区瞬移落点（position.copy 用）
+const _camFwd   = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
 
 function buildSCP173() {
   const g = new THREE.Group();
@@ -480,22 +498,43 @@ function buildSCP173() {
   return g;
 }
 
+/* 统一的观测命中代理体：真实 GLB 的网格可能有缝隙，中心射线会漏过去。
+   不可见材质（material.visible=false）依旧参与 Raycaster 命中。 */
+function ensureHitProxy(root) {
+  if (root.getObjectByName('SCP173_HitProxy')) return;
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const centre = new THREE.Vector3(); box.getCenter(centre);
+  root.worldToLocal(centre);
+  const proxy = new THREE.Mesh(
+    new THREE.BoxGeometry(Math.max(size.x, 0.8) * 1.08,
+                          Math.max(size.y, 1.2) * 1.02,
+                          Math.max(size.z, 0.8) * 1.12),
+    new THREE.MeshBasicMaterial({ visible: false })
+  );
+  proxy.position.copy(centre);
+  proxy.name = 'SCP173_HitProxy';
+  root.add(proxy);
+}
+
 function installEntity(root) {
-  if (scp173 && scp173 !== root) {
-    scene.remove(scp173);
-    const idx = shootables.indexOf(scp173);
+  if (scp173Group && scp173Group !== root) {
+    scene.remove(scp173Group);
+    const idx = shootables.indexOf(scp173Group);
     if (idx >= 0) shootables.splice(idx, 1);
-    scp173.traverse((o) => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
+    scp173Group.traverse((o) => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
   }
-  scp173 = root;
+  scp173Group = root;                    // 真实 GLB 加载成功后即赋给 SCP-173 实体组
+  entityMixer = null; entityActions = {}; entityState = 'idle';
   root.position.copy(SPAWN_ENTITY);
   root.name = 'SCP173';
   root.userData.M9ConcreteColor = root.userData.M9ConcreteColor || '0x777777';
   root.userData.M9Roughness = root.userData.M9Roughness === undefined ? 0.9 : root.userData.M9Roughness;
   root.userData.M9PartCount = root.userData.M9PartCount || root.children.length;
+  ensureHitProxy(root);
   scene.add(root);
   if (!shootables.includes(root)) shootables.push(root);
-  // 射线判定需要最新的世界矩阵
   root.updateMatrixWorld(true);
 }
 
@@ -535,6 +574,54 @@ function concreteHumanoid(root) {
   root.userData.M9Source = 'KhronosGroup/glTF-Sample-Models CesiumMan (concrete re-skin)';
   document.body.setAttribute('data-m9-humanoid', 'loaded');
   return root;
+}
+
+/* ------- 真实开源 SCP-173 雕像（Yni Viar / CC-BY 3.0+） -------------------
+   上游：https://github.com/Yni-Viar/scp-173
+   原始 Statue.gltf + .bin + 3 张 2048² PBR 贴图，已由 tools/gltf_to_glb.py
+   封装成单文件 SCP173.glb。保留源贴图，仅把 PBR 调整为混凝土粗糙度 0.9。 */
+function prepareReal173(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = true; o.receiveShadow = true;
+    o.name = 'SCP173_part';
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      if (!m) continue;
+      if ('roughness' in m) m.roughness = 0.9;
+      if ('metalness' in m) m.metalness = 0.02;
+      m.needsUpdate = true;
+    }
+  });
+  root.scale.setScalar(1.25);        // 原始雕像 2.67m → 约 3.34m
+  root.userData.M9ConcreteColor = 'source PBR baseColorTexture (grey concrete)';
+  root.userData.M9Roughness = 0.9;
+  root.userData.M9PartCount = 1;
+  root.userData.M9Source = 'SCP173.glb · Yni Viar / Yni-Viar/scp-173 · CC-BY 3.0+ (real community statue)';
+  return root;
+}
+
+/* GLTFLoader 加载真实模型；成功后把 gltf.scene 赋给实体组，失败则保留
+   程序化高精度混凝土雕像（圆柱+长方体，脖子/四肢/手指俱全，绝非人形白板）。 */
+function loadRealSCP173() {
+  const loader = new GLTFLoader(manager);
+  loader.load('./assets/models/SCP173.glb',
+    (gltf) => {
+      try {
+        scp173Group = gltf.scene;                    // ★ 加载成功后赋给实体组
+        prepareReal173(scp173Group);
+        installEntity(scp173Group);
+        document.body.setAttribute('data-m9-entity', 'SCP173.glb');
+        console.info('[MIRROR-9] 真实开源 SCP-173 雕像 GLB 已加载 · CC-BY 3.0+ (Yni Viar)');
+      } catch (e) {
+        console.warn('[MIRROR-9] SCP173.glb 解析失败，保留程序化混凝土雕像', e);
+      }
+    },
+    undefined,
+    (err) => {
+      console.warn('[MIRROR-9] SCP173.glb 下载失败，保留程序化混凝土雕像:', err);
+      document.body.setAttribute('data-m9-entity', 'procedural-statue');
+    });
 }
 
 /* -------- 怪物骨骼动画状态机（Xbot.glb：idle / walk / run） ---------------- */
@@ -601,8 +688,8 @@ function loadEntityGLB(url, mode) {
     (gltf) => {
       try {
         if (mode === 'humanoid') installEntity(concreteHumanoid(gltf.scene));
-        else if (mode === 'glb') installEntity(gltf.scene);
-        else installEntity(buildEntityGLB(gltf));   // xbot（默认）
+        else if (mode === 'glb') installEntity(prepareReal173(gltf.scene));
+        else installEntity(buildEntityGLB(gltf));   // xbot（可选 ?xbot=1）
         document.body.setAttribute('data-m9-entity', mode);
       } catch (e) { console.warn('[MIRROR-9] 实体 GLB 解析失败，保留程序化人形', e); }
     },
@@ -610,11 +697,13 @@ function loadEntityGLB(url, mode) {
     (err) => { console.warn('[MIRROR-9] 实体 GLB 加载失败，保留程序化人形:', err); });
 }
 
-// 立即用程序化人形兜底，保证游戏任何情况下都能开；随后异步升级为真实骨骼模型。
+// 立即用高精度程序化混凝土雕像兜底（网络受阻也绝不会出现人形白板），
+// 随后异步用真实开源 SCP-173 GLB 无缝替换。
 installEntity(buildSCP173());
 if (USE_HUMANOID) loadEntityGLB('./assets/models/humanoid.glb', 'humanoid');
-else if (USE_GLB) loadEntityGLB('./assets/models/SCP173.glb', 'glb');
-else loadEntityGLB('./assets/models/Xbot.glb', 'xbot');
+else if (USE_XBOT)  loadEntityGLB('./assets/models/Xbot.glb', 'xbot');
+else if (USE_GLB)   loadEntityGLB('./assets/models/SCP173.glb', 'glb');
+else loadRealSCP173();        // 默认：真实开源 SCP-173 雕像
 
 /* ------------------------------------------------- 第一人称持枪 ViewModel */
 const viewModel = new THREE.Group();
@@ -655,20 +744,37 @@ function buildProceduralGun() {
 }
 buildProceduralGun();
 
-/* 枪口闪光（非网格，叠加混合） */
-vmFlash = new THREE.Mesh(
-  new THREE.ConeGeometry(0.075, 0.24, 10),
-  new THREE.MeshBasicMaterial({ color: 0xffd28a, transparent: true, opacity: 0.95,
+/* 枪口闪光：网格 MuzzleFlash + 黄色 PointLight（挂在 ViewModel 上，跟随相机） */
+const muzzleFlashMesh = new THREE.Mesh(
+  new THREE.ConeGeometry(0.10, 0.30, 12),
+  new THREE.MeshBasicMaterial({ color: 0xffd45a, transparent: true, opacity: 0.98,
                                 depthWrite: false, blending: THREE.AdditiveBlending })
 );
-vmFlash.rotation.x = -Math.PI / 2;
-vmFlash.position.set(0, 0.005, -0.80);
-vmFlash.visible = false;
-viewModel.add(vmFlash);
-viewModel.add(new THREE.PointLight(0xffcf8a, 0, 3));
+muzzleFlashMesh.rotation.x = -Math.PI / 2;
+muzzleFlashMesh.position.set(0, 0.005, -0.86);
+muzzleFlashMesh.visible = false;
+muzzleFlashMesh.name = 'MuzzleFlash';
+viewModel.add(muzzleFlashMesh);
+vmFlash = muzzleFlashMesh;
 
-/* 弹药 / 换弹状态机 */
-const MAG_SIZE = 12;
+const muzzleLight = new THREE.PointLight(0xffcc33, 0, 7, 1.6);   // 黄色枪口光
+muzzleLight.position.set(0, 0.005, -0.88);
+muzzleLight.name = 'MuzzleFlash_PointLight';
+viewModel.add(muzzleLight);
+let muzzleEnergy = 0, muzzleHideTimer = null;
+
+function triggerMuzzleFlash() {
+  muzzleEnergy = 1;
+  muzzleLight.intensity = 9.5;
+  muzzleFlashMesh.visible = true;                 // 瞬间闪现
+  muzzleFlashMesh.rotation.z = Math.random() * Math.PI;
+  muzzleFlashMesh.scale.setScalar(0.85 + Math.random() * 0.5);
+  clearTimeout(muzzleHideTimer);
+  muzzleHideTimer = setTimeout(() => { muzzleFlashMesh.visible = false; }, 70);
+}
+
+/* 弹药 / 换弹状态机：30 发上限 + R 键换弹 */
+const MAG_SIZE = 30;
 let ammo = MAG_SIZE;
 let reloading = false;
 let gunMixer = null, gunActions = {}, gunState = 'idle';
@@ -726,17 +832,22 @@ loadGunGLB();
 
 function updateViewModel(delta) {
   updateGunAnim(delta);
-  recoil = Math.max(0, recoil - delta * 7.5);
+  /* 后坐力插值动画：开火脉冲衰减，枪械位置/旋转用 THREE.MathUtils.lerp 平滑后坐。
+     沿 +Z（相机局部坐标）向后退，同时上抬与侧摆。 */
+  const k = Math.min(1, delta * 22);
+  recoilKick = THREE.MathUtils.lerp(recoilKick, 0, Math.min(1, delta * 9));
+  recoil = THREE.MathUtils.lerp(recoil, recoilKick, k);
   const moving = Math.min(1, moveVelocity.length() / WALK_SPEED);
   const bob = Math.sin(performance.now() * 0.011) * 0.010 * moving;
-  viewModel.position.set(
-    VM_BASE.x + Math.sin(performance.now() * 0.0055) * 0.004 * moving,
-    VM_BASE.y + bob - recoil * 0.020,
-    VM_BASE.z + recoil * 0.10
-  );
-  viewModel.rotation.set(recoil * 0.18, -recoil * 0.05, 0);
-  vmFlash.visible = recoil > 0.55;
-  if (vmFlash.visible) vmFlash.scale.setScalar(0.7 + recoil * 0.7);
+  const swayX = Math.sin(performance.now() * 0.0055) * 0.004 * moving;
+  viewModel.position.x = THREE.MathUtils.lerp(viewModel.position.x, VM_BASE.x + swayX, k);
+  viewModel.position.y = THREE.MathUtils.lerp(viewModel.position.y, VM_BASE.y + bob - recoil * 0.020, k);
+  viewModel.position.z = THREE.MathUtils.lerp(viewModel.position.z, VM_BASE.z + recoil * 0.10, k);
+  viewModel.rotation.x = THREE.MathUtils.lerp(viewModel.rotation.x, recoil * 0.18, k);
+  viewModel.rotation.y = THREE.MathUtils.lerp(viewModel.rotation.y, -recoil * 0.05, k);
+  // 黄色枪口光随脉冲衰减
+  muzzleEnergy = THREE.MathUtils.lerp(muzzleEnergy, 0, Math.min(1, delta * 16));
+  muzzleLight.intensity = muzzleEnergy * 9.5;
 }
 
 /* ------------------------------------------------------------------ audio  */
@@ -760,6 +871,38 @@ function playOneShot(key, volume) {
     a.play().catch(() => {});
   } catch (_) { /* 音频可选 */ }
 }
+/* 每次瞬移播放「巨大」的混凝土摩擦声：
+   1) 真实下载的 concrete_scrape.ogg 一次性高音量播放；
+   2) WebAudio 低频带通噪声冲激作为兑底，即便自动播放被拦截也有刮擦声。 */
+let scrapeCtx = null;
+function playConcreteScrape() {
+  try {
+    const a = sounds.scrape.cloneNode();
+    a.loop = false; a.volume = 0.95; a.currentTime = 0;
+    const p = a.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+    setTimeout(() => { try { a.pause(); } catch (_) {} }, 900);
+  } catch (_) { /* 音频可选 */ }
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!scrapeCtx) scrapeCtx = new AC();
+    const ctx = scrapeCtx;
+    const dur = 0.20, len = Math.floor(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.5);
+    }
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'bandpass'; filt.frequency.value = 380; filt.Q.value = 0.7;
+    const gain = ctx.createGain(); gain.gain.value = 0.42;
+    src.connect(filt); filt.connect(gain); gain.connect(ctx.destination);
+    src.start();
+  } catch (_) { /* 音频可选 */ }
+}
+
 function startAmbience() {
   try { sounds.alarm.play().catch(() => {}); } catch (_) {}
   try { sounds.scrape.play().catch(() => {}); } catch (_) {}
@@ -947,6 +1090,10 @@ function initTouchControls() {
   btnFire.addEventListener('pointerleave', endFire);
   btnFire.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
   btnLight.addEventListener('pointerdown', (e) => { e.preventDefault(); toggleFlashlight(); });
+  const btnReload = $('btn-reload');
+  if (btnReload) {
+    btnReload.addEventListener('pointerdown', (e) => { e.preventDefault(); startReload(); });
+  }
 }
 if (isTouchDevice) initTouchControls();
 
@@ -1056,18 +1203,14 @@ function fire() {
   if (ammo <= 0) { startReload(); return; }
   ammo--;
   playOneShot('gunshot', 0.55);
-  recoil = 1;
+  recoilKick = 1; recoil = recoilKick;   // 后坐力脉冲 → updateViewModel 用 MathUtils.lerp 插值
+  triggerMuzzleFlash();                   // 黄色 PointLight + 瞬间 MuzzleFlash
   muzzleEl.classList.remove('fire');
   void muzzleEl.offsetWidth;
   muzzleEl.classList.add('fire');
   crosshair.classList.add('fired');
   setTimeout(() => crosshair.classList.remove('fired'), 100);
   setGunState('shoot');          // 真实骨骼开火动画（绑定到手部）
-
-  const flashLight = new THREE.PointLight(0xffd9a0, 3.2, 9, 1.5);
-  flashLight.position.set(0.25, -0.18, -0.7);
-  camera.add(flashLight);
-  setTimeout(() => camera.remove(flashLight), 70);
 
   camera.updateMatrixWorld(true);
   raycaster.setFromCamera(CENTRE, camera);
@@ -1147,21 +1290,25 @@ function resetRun() {
   // 「未观测」而立刻遭到追击（这正是盯不住它的体验灾难来源）。
   yaw = Math.atan2(-(SPAWN_ENTITY.x - SPAWN_PLAYER.x),
                    -(SPAWN_ENTITY.z - SPAWN_PLAYER.z));
-  pitch = 0;
+  pitch = 0; roll = 0; deathPitch = 0; deathDrop = 0;
+  deathAnimT = -1; teleportTimer = 0; teleportCount = 0;
+  camera.position.y = EYE_HEIGHT;
   applyLook();
   moveVelocity.set(0, 0, 0);
   entityVelocity.set(0, 0, 0);
-  if (scp173) {
-    scp173.position.copy(SPAWN_ENTITY);
-    scp173.lookAt(camera.position.x, 0, camera.position.z);
-    scp173.updateMatrixWorld(true);
+  if (scp173Group) {
+    scp173Group.position.copy(SPAWN_ENTITY);
+    scp173Group.rotation.set(0, 0, 0);
+    scp173Group.lookAt(camera.position.x, 0, camera.position.z);
+    scp173Group.updateMatrixWorld(true);
   }
   survivalTime = 0;
   blinkPeriod = 10; blinkClock = blinkPeriod; blinkLeft = 0;
   isBlinking = false; isObserved = false;
   blinkEl.classList.remove('closed');
   clearDecals();
-  recoil = 0;
+  recoil = 0; recoilKick = 0;
+  muzzleEnergy = 0; muzzleLight.intensity = 0; muzzleFlashMesh.visible = false;
   joy.x = 0; joy.y = 0;
   flashlightOn = true;
   flashlight.visible = true; nearFill.visible = true;
@@ -1219,6 +1366,7 @@ restartBtn.addEventListener('click', () => {
 function PlayerDeath() {
   if (state === 'DEAD' || state === 'EXTRACTED') return;
   state = 'DEAD';
+  deathAnimT = 0;                    // 立即触发扭断脖子死亡动画
   playOneShot('neckSnap', 0.95);
   stopAmbience();
   endFire();
@@ -1244,6 +1392,24 @@ function PlayerExtracted(reason) {
   restartBtn.textContent = '再来一次';
   gameOver.classList.add('win', 'active');
   if (controls.isLocked) controls.unlock();
+}
+
+/* -------------------------------- 扭断脖子死亡动画 -------------------------- */
+/* 距离 <1.5 时由 PlayerDeath() 把 deathAnimT 置 0 启动：相机猛然侧倾、
+   低头下沉，173 原地扭转约 150°；Game Over 界面同时立即显示。 */
+function updateDeathAnimation(delta) {
+  if (deathAnimT < 0) return;
+  deathAnimT = Math.min(DEATH_ANIM_SECONDS, deathAnimT + delta);
+  const t = deathAnimT / DEATH_ANIM_SECONDS;
+  const snap = t < 0.12 ? 0 : Math.min(1, (t - 0.12) / 0.55);
+  roll = THREE.MathUtils.lerp(0, 1.18, snap);
+  deathPitch = THREE.MathUtils.lerp(0, 0.52, snap);
+  deathDrop = THREE.MathUtils.lerp(0, -0.62, snap);
+  camera.position.y = EYE_HEIGHT + deathDrop;
+  if (scp173Group) scp173Group.rotation.y = THREE.MathUtils.lerp(0, 2.6, snap);
+  applyLook();
+  camera.updateMatrixWorld(true);
+  if (window.__M9_SELFTEST) window.__M9_SELFTEST.deathAnim = Number(t.toFixed(2));
 }
 
 /* ---------------------------------------------------------- movement step  */
@@ -1288,61 +1454,104 @@ function updatePlayer(delta) {
   camera.position.y = EYE_HEIGHT;
 }
 
-/* -------------------------------------- 核心观测判定（严格每帧 Raycaster） */
-/* 规则：只有 isObserved === true 时 173 才冻结；否则必定向玩家移动。
-   不再让眨眼、保护期、近距离、遮挡物等任何逻辑覆盖这条判定。 */
-function updateEntity(delta) {
-  if (!scp173) return;
+/* -------------------------------------- 核心观测判定 + 盲区瞬移（严禁平移） -- */
+/* 1) THREE.Raycaster 从屏幕中心 (0,0) 发射；命中实体且距离 <60 → 完全冻结，零位移。
+   2) 未命中 → 用 THREE.Clock 的 deltaTime 累加瞬移计时器，每 0.1 秒计算当前
+      视锥体盲区，用 position.copy 瞬间移动到更靠近玩家的位置。
+      全程不使用 lerp / addScaledVector / 速度积分，因此不存在任何滑行。
+   3) 每次瞬移播放巨大混凝土摩擦声；距离 <1.5 → 扭断脖子 + Game Over。 */
+function computeBlindSpotTarget(out) {
+  // 视锥水平半角由相机 fov 与 aspect 反推；盲区 = |偏角| > halfH 的侧后区域
+  const halfV = THREE.MathUtils.degToRad(camera.fov * 0.5);
+  const halfH = Math.atan(Math.tan(halfV) * Math.max(1, camera.aspect));
+  camera.getWorldDirection(_camFwd);
+  _camFwd.y = 0;
+  if (_camFwd.lengthSq() < 1e-6) _camFwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+  _camFwd.normalize();
+  _camRight.set(-_camFwd.z, 0, _camFwd.x).normalize();
 
-  // 相机与实体的世界矩阵必须先更新，否则射线用的是上一帧的朝向/位置
-  camera.updateMatrixWorld(true);
-  scp173.updateMatrixWorld(true);
+  const dx = scp173Group.position.x - camera.position.x;
+  const dz = scp173Group.position.z - camera.position.z;
+  const nextDist = Math.max(KILL_DISTANCE * 0.72,
+                            Math.hypot(dx, dz) - TELEPORT_STEP);
 
-  raycaster.setFromCamera(CENTRE, camera);          // CENTRE = new THREE.Vector2(0, 0)
-  const intersects = raycaster.intersectObject(scp173, true);
-  isObserved = false;
-  if (intersects.length > 0 && intersects[0].distance < VIEW_DISTANCE) {
-    isObserved = true;
+  // 落在视锥边缘外侧（刚离开视野，玩家快速回头仍有机会重新锁定），
+  // 而非直接瞬移到正背后导致完全无解。
+  const minA = Math.min(Math.PI, halfH + 0.38);
+  const theta = minA + Math.random() * Math.min(1.15, Math.PI - minA);
+  const sign = Math.random() < 0.5 ? -1 : 1;
+  const dirX = _camFwd.x * Math.cos(theta) + _camRight.x * Math.sin(theta) * sign;
+  const dirZ = _camFwd.z * Math.cos(theta) + _camRight.z * Math.sin(theta) * sign;
+
+  const lim = ROOM / 2 - 1.4;
+  out.set(
+    Math.max(-lim, Math.min(lim, camera.position.x + dirX * nextDist)),
+    scp173Group.position.y,
+    Math.max(-lim, Math.min(lim, camera.position.z + dirZ * nextDist))
+  );
+  return out;
+}
+
+function teleportOnce() {
+  computeBlindSpotTarget(_teleportTarget);
+  // ★ 唯一允许的位移方式：整向量瞬时拷贝（绝无插值/平移）
+  scp173Group.position.copy(_teleportTarget);
+  scp173Group.lookAt(camera.position.x, scp173Group.position.y, camera.position.z);
+  scp173Group.updateMatrixWorld(true);
+  entityVelocity.set(0, 0, 0);          // 瞬移不是连续速度
+  teleportCount++;
+  playConcreteScrape();                 // 每次瞬移：巨大的混凝土摩擦声
+  if (window.__M9_SELFTEST) {
+    window.__M9_SELFTEST.teleports = teleportCount;
+    window.__M9_SELFTEST.lastTeleportPos = [Number(scp173Group.position.x.toFixed(2)),
+                                            Number(scp173Group.position.z.toFixed(2))];
   }
+}
+
+function updateEntity(delta) {
+  if (!scp173Group) return;
+
+  camera.updateMatrixWorld(true);
+  scp173Group.updateMatrixWorld(true);
+
+  raycaster.setFromCamera(CENTRE, camera);          // 屏幕中心 (0,0) NDC
+  const intersects = raycaster.intersectObject(scp173Group, true);
+  isObserved = intersects.length > 0 && intersects[0].distance < VIEW_DISTANCE;
 
   if (window.__M9_SELFTEST) {
     const s = window.__M9_SELFTEST;
     if (isObserved) s.freezeFrames = (s.freezeFrames || 0) + 1;
     else s.chaseFrames = (s.chaseFrames || 0) + 1;
     s.rayHits = intersects.length;
+    s.teleports = teleportCount;
   }
-  _prev.copy(scp173.position);
 
   if (isObserved) {
-    // 被注视：velocity = 0，完全冻结
+    // 被注视：速度归零、计时器清零；位置/朝向/动画一律不更新 → 零位移冻结
     entityVelocity.set(0, 0, 0);
-    sounds.scrape.volume = Math.max(0, sounds.scrape.volume - delta * 1.5);
+    teleportTimer = 0;
+    sounds.scrape.volume = Math.max(0, sounds.scrape.volume - delta * 2.0);
   } else {
-    // 未被注视：以 deltaTime * 20 的极高速度向 Camera.position 逼近
-    _target.set(camera.position.x, scp173.position.y, camera.position.z);
-    scp173.position.lerp(_target, Math.min(delta * 20, 1));
-    _step.subVectors(scp173.position, _prev);
-    const maxStep = ENTITY_MAX_SPEED * delta;
-    if (_step.length() > maxStep) { _step.setLength(maxStep); scp173.position.copy(_prev).add(_step); }
-    entityVelocity.copy(_step).divideScalar(Math.max(delta, 1e-4));
-    scp173.lookAt(camera.position.x, scp173.position.y, camera.position.z);
-    scp173.updateMatrixWorld(true);
+    // 未被注视：Clock 的 deltaTime 累加，每 0.1s 触发一次视锥盲区瞬移
+    teleportTimer += delta;
+    while (teleportTimer >= TELEPORT_INTERVAL) {
+      teleportTimer -= TELEPORT_INTERVAL;
+      if (state === 'PLAYING') teleportOnce();
+    }
+    // 可选骨骼模型（?xbot=1）仅在未观测时推进动画
+    if (entityMixer) {
+      setEntityState('run');
+      updateEntityAnim(delta);
+    }
     sounds.scrape.volume = Math.min(0.42, sounds.scrape.volume + delta * 1.8);
   }
 
-  // 怪物骨骼动画：被注视 → 站定(idle)；未观测 → 按移动速度播 walk / run
-  if (entityMixer) {
-    if (isObserved) setEntityState('idle');
-    else setEntityState(entityVelocity.length() > 4 ? 'run' : 'walk');
-    updateEntityAnim(delta);
-  }
-
-  const dx = scp173.position.x - camera.position.x;
-  const dz = scp173.position.z - camera.position.z;
+  const dx = scp173Group.position.x - camera.position.x;
+  const dz = scp173Group.position.z - camera.position.z;
   const dist = Math.hypot(dx, dz);
 
   hudDist.textContent = dist.toFixed(1) + ' m';
-  observeBadge.textContent = isObserved ? '已观测 · 冻结' : '未观测 · 移动中';
+  observeBadge.textContent = isObserved ? '已观测 · 冻结' : '未观测 · 瞬移中';
   observeBadge.className = 'badge ' + (isObserved ? 'observed' : 'unseen');
   crosshair.classList.toggle('observed', isObserved);
   crosshair.classList.toggle('danger', !isObserved && dist < 5);
@@ -1437,6 +1646,8 @@ function loop() {
     updateHud(delta);
     updateDecals(delta);
     checkWin();
+  } else if (state === 'DEAD') {
+    updateDeathAnimation(delta);       // 结算界面下继续播放扭断脖子动画
   }
   animEvac(delta);
   renderer.render(scene, camera);
@@ -1446,7 +1657,7 @@ function loop() {
     st.frames++;
     st.state = state;
     st.observed = isObserved;
-    st.entityLoaded = !!scp173;
+    st.entityLoaded = !!scp173Group;
     st.survival = Number(survivalTime.toFixed(2));
     st.yaw = Number(yaw.toFixed(3));
     st.posZ = Number(camera.position.z.toFixed(2));
@@ -1457,23 +1668,28 @@ function loop() {
     st.viewModel = !!viewModel.parent;
     st.joystickLib = !!window.__M9_JOYSTICK;
     st.nippleDom = !!document.querySelector('#joystick-zone .nipple');
-    st.humanoidParts = scp173 ? (scp173.userData.M9PartCount || scp173.children.length) : 0;
-    st.entityColor = scp173 ? scp173.userData.M9ConcreteColor : '';
-    st.entityRoughness = scp173 ? scp173.userData.M9Roughness : -1;
-    st.entitySource = scp173 ? scp173.userData.M9Source : '';
+    st.humanoidParts = scp173Group ? (scp173Group.userData.M9PartCount || scp173Group.children.length) : 0;
+    st.entityColor = scp173Group ? scp173Group.userData.M9ConcreteColor : '';
+    st.entityRoughness = scp173Group ? scp173Group.userData.M9Roughness : -1;
+    st.entitySource = scp173Group ? scp173Group.userData.M9Source : '';
     st.subtitle = subtitleText.textContent;
     st.subtitleFaded = subtitleBar.classList.contains('faded');
     st.menuHidden = mainMenu.style.display === 'none';
     st.flashlightParent = flashlight.parent === camera ? 'camera' : (flashlight.parent ? flashlight.parent.type : 'none');
     st.flashlightIntensity = flashlight.intensity;
     st.flashlightShadow = flashlight.castShadow;
+    st.flashlightRigOK = (camera.parent === scene && flashlight.parent === camera && flashlight.castShadow);
+    st.magSize = MAG_SIZE;
+    st.teleports = teleportCount;
+    st.teleportInterval = TELEPORT_INTERVAL;
+    st.deathAnim = state === 'DEAD' ? Number((deathAnimT / DEATH_ANIM_SECONDS).toFixed(2)) : -1;
     st.flashlightTargetParent = flashlight.target.parent === camera ? 'camera' : 'other';
     st.sceneHasCamera = camera.parent === scene;
     st.fullscreenCalls = fullscreenCalls;
     st.gunSource = document.body.getAttribute('data-m9-gun') || 'procedural';
     st.gunAnims = gunActions ? Object.keys(gunActions).join(',') : '';
     st.gunMixer = !!gunMixer;
-    st.entitySource = scp173 ? scp173.userData.M9Source : '';
+    st.entitySource = scp173Group ? scp173Group.userData.M9Source : '';
     st.entityMode = document.body.getAttribute('data-m9-entity') || 'procedural';
     st.entityAnims = entityActions ? Object.keys(entityActions).join(',') : '';
     st.entityMixer = !!entityMixer;
@@ -1485,9 +1701,9 @@ function loop() {
     st.gunCam = [Number(_gp.x.toFixed(2)), Number(_gp.y.toFixed(2)), Number(_gp.z.toFixed(2))];
     st.touchYawDelta = Number(window.__M9_TOUCH_YAW_DELTA.toFixed(3));
     st.viewDistance = VIEW_DISTANCE;
-    if (scp173) {
-      st.dist = Number(Math.hypot(scp173.position.x - camera.position.x,
-                                  scp173.position.z - camera.position.z).toFixed(2));
+    if (scp173Group) {
+      st.dist = Number(Math.hypot(scp173Group.position.x - camera.position.x,
+                                  scp173Group.position.z - camera.position.z).toFixed(2));
     }
     document.body.setAttribute('data-m9-selftest', JSON.stringify(st));
   }
@@ -1572,6 +1788,9 @@ if (AUTOSTART && !SELFTEST) startBtn.click();
 /* 调试接口（无副作用，便于自动化验证） */
 window.__M9_DEBUG = {
   joy, fire, toggleFlashlight, enterFullscreen, startReload,
+  getTeleports: () => teleportCount,
+  getEntitySource: () => scp173Group ? scp173Group.userData.M9Source : '',
+  getEntityPos: () => scp173Group ? scp173Group.position.toArray() : null,
   getPos: () => camera.position.toArray(),
   getYaw: () => yaw,
   getState: () => state,

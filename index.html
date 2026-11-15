@@ -52,7 +52,7 @@
 <div id="orientation-overlay">
   <div class="rotate-icon">↻</div>
   <h2>请将手机横屏<br>以获得最佳体验</h2>
-  <p>旋转设备后自动继续 · 点击「开始收容行动」将自动进入全屏</p>
+  <p>旋转设备后自动继续 · 点击「开始游戏」将自动进入全屏</p>
 </div>
 
 <!-- ============================ 游戏 HUD ============================ -->
@@ -88,7 +88,7 @@
 
   <div id="hud-bottom">
     <div id="blink-meter"><div id="blink-meter-fill"></div></div>
-    <span class="hud-hint" id="hud-hint">[WASD] 移动 · [鼠标] 观察 · [左键] 开火 · [F] 手电</span>
+    <span class="hud-hint" id="hud-hint">[WASD] 移动 · [鼠标] 观察 · [左键] 开火 · [R] 换弹 · [F] 手电</span>
   </div>
 
   <div id="toast"></div>
@@ -98,8 +98,9 @@
 <div id="touch-controls" class="hidden">
   <div id="joystick-zone"><span class="zone-label">移动</span></div>
   <div id="look-zone"><span class="zone-label">滑动观察</span></div>
-  <button id="btn-light" type="button">手电筒</button>
-  <button id="btn-fire"  type="button">开火</button>
+  <button id="btn-light"  type="button">手电筒</button>
+  <button id="btn-reload" type="button">换弹</button>
+  <button id="btn-fire"   type="button">开火</button>
 </div>
 
 <!-- 眨眼 / 枪口闪光 -->
@@ -115,11 +116,11 @@
     <h1>SCP:<br><em>MIRROR-9</em></h1>
     <p class="subtitle">收容突破 / 视觉锁定协议已启动</p>
     <p class="brief">
-      它只会在无人注视时移动。用准星锁定它，别移开视线。<br>
-      撑过 60 秒，或抵达地图边缘的绿色撤离光圈。
+      它只会在无人注视时移动，而且不是滑行 —— 是每 0.1 秒一次的瞬移。<br>
+      用准星锁定它，别移开视线；撑过 60 秒或抵达绿色撤离光圈。
     </p>
-    <button id="start-btn" type="button">
-      <span id="start-label">正在载入资源…</span>
+    <button id="start-btn" type="button" aria-label="开始游戏">
+      <span id="start-label">开始游戏</span>
     </button>
     <div id="load-status">正在载入引擎 / 模型 / 音频</div>
     <div class="controls-grid">
@@ -127,6 +128,7 @@
       <div><kbd>右侧滑动</kbd><span>转动视角</span></div>
       <div><kbd>开火</kbd><span>射击 / 弹痕</span></div>
       <div><kbd>手电筒</kbd><span>开关照明</span></div>
+      <div><kbd>R / 换弹</kbd><span>补满 30 发弹匣</span></div>
     </div>
     <div class="footer-note" id="lib-mode">渲染引擎 THREE.JS r160.1 · 本地模块</div>
   </div>

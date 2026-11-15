@@ -11,3 +11,7 @@ __pycache__/
 *_creds*.json
 deploy_local.py
 package-lock.json
+
+# 临时下载/验证目录（由 tools/gltf_to_glb.py 与 CI 探针生成）
+tools/_src173/
+tools/_verify/
