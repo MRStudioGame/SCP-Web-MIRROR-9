@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="description" content="SCP: MIRROR-9 — WebGL containment simulation. Do not break eye contact.">
+<title>SCP: MIRROR-9 // WEB CONTAINMENT</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+
+<!--
+  Three.js r160.1 + addons.
+  Default: local modules under ./js/libs (works offline / on GitHub Pages).
+  CDN fallback: append ?cdn=1 to the URL -> jsdelivr-hosted r160.1 modules.
+  Both import maps are declared here so the CDN route is genuinely wired in.
+-->
+<script>
+(function () {
+  var CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.1/';
+  var useCdn = new URLSearchParams(location.search).get('cdn') === '1';
+  var imports = useCdn ? {
+    "three": CDN + "build/three.module.js",
+    "three/addons/loaders/GLTFLoader.js": CDN + "examples/jsm/loaders/GLTFLoader.js",
+    "three/addons/controls/PointerLockControls.js": CDN + "examples/jsm/controls/PointerLockControls.js"
+  } : {
+    "three": "./js/libs/three.module.js",
+    "three/addons/loaders/GLTFLoader.js": "./js/libs/GLTFLoader.js",
+    "three/addons/controls/PointerLockControls.js": "./js/libs/PointerLockControls.js"
+  };
+  var tag = document.createElement('script');
+  tag.type = 'importmap';
+  tag.textContent = JSON.stringify({ imports: imports });
+  document.head.appendChild(tag);
+  window.M9_LIB_MODE = useCdn ? 'cdn' : 'local';
+})();
+</script>
+</head>
+<body>
+
+<div id="stage"></div>
+<div id="vignette"></div>
+<div id="scanlines"></div>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div class="crosshair" id="crosshair">
+    <i></i><i></i><i></i><i></i><b></b>
+  </div>
+
+  <div id="hud-top">
+    <span class="hud-tag">MIRROR-9 / CONTAINMENT CELL 04</span>
+    <span id="observe-badge" class="badge unseen">UNOBSERVED</span>
+  </div>
+
+  <div id="hud-left">
+    <div class="hud-line"><span>TIME IN CELL</span><strong id="hud-time">00:00</strong></div>
+    <div class="hud-line"><span>PROXIMITY</span><strong id="hud-dist">--.- m</strong></div>
+    <div class="hud-line"><span>BLINK CYCLE</span><strong id="hud-blink">STABLE</strong></div>
+  </div>
+
+  <div id="hud-right">
+    <div class="hud-line"><span>FLASHLIGHT</span><strong id="hud-light">ON</strong></div>
+    <div class="hud-line"><span>AMMO</span><strong id="hud-ammo">∞ / ∞</strong></div>
+  </div>
+
+  <div id="hud-bottom">
+    <div id="blink-meter"><div id="blink-meter-fill"></div></div>
+    <span class="hud-hint">[WASD] MOVE &nbsp;·&nbsp; [MOUSE] LOOK &nbsp;·&nbsp; [CLICK] FIRE &nbsp;·&nbsp; [F] LIGHT &nbsp;·&nbsp; [ESC] RELEASE</span>
+  </div>
+
+  <div id="toast"></div>
+</div>
+
+<!-- Blink eyelids -->
+<div id="blink"><div class="lid top"></div><div class="lid bottom"></div></div>
+
+<!-- Muzzle flash -->
+<div id="muzzle-flash"></div>
+
+<!-- Main menu -->
+<div id="main-menu">
+  <div class="menu-frame">
+    <div class="classify">FOUNDATION RECORD &nbsp;//&nbsp; LEVEL 3 CLEARANCE &nbsp;//&nbsp; DO NOT DISTRIBUTE</div>
+    <div class="rule"></div>
+    <div class="item-no">ITEM&nbsp;#&nbsp;<span>173</span>&nbsp;—&nbsp;WEB SIMULATION</div>
+    <h1>SCP:<br><em>MIRROR-9</em></h1>
+    <p class="subtitle">CONTAINMENT BREACH &nbsp;/&nbsp; OBSERVATION PROTOCOL ACTIVE</p>
+    <p class="brief">
+      The sculpture moves only when unobserved. Keep the crosshair on it.
+      Blink and it closes the distance. Survive the cell.
+    </p>
+    <button id="start-btn" disabled>
+      <span id="start-label">INITIALIZING ASSETS…</span>
+    </button>
+    <div id="load-status">LOADING ENGINE / MODEL / AUDIO</div>
+    <div class="controls-grid">
+      <div><kbd>W A S D</kbd><span>MOVE</span></div>
+      <div><kbd>MOUSE</kbd><span>AIM / OBSERVE</span></div>
+      <div><kbd>LMB</kbd><span>FIRE</span></div>
+      <div><kbd>F</kbd><span>FLASHLIGHT</span></div>
+    </div>
+    <div class="footer-note" id="lib-mode">RENDERER: THREE.JS r160.1 · LOCAL MODULES</div>
+  </div>
+</div>
+
+<!-- Death overlay -->
+<div id="game-over">
+  <div class="death-inner">
+    <div class="death-code">// TERMINATION EVENT 09-NECK-SNAPSHOT</div>
+    <h2>CONTAINMENT<br>FAILURE</h2>
+    <p id="death-detail">SUBJECT BREACHED VISUAL CONTACT PERIMETER</p>
+    <button id="restart-btn">RE-ENTER CELL</button>
+  </div>
+</div>
+
+<!-- Pause / pointer-lock released -->
+<div id="pause-overlay" class="hidden">
+  <div class="pause-inner">
+    <h3>POINTER RELEASED</h3>
+    <p>Visual contact lost. The subject is still in the cell.</p>
+    <button id="resume-btn">RESUME OBSERVATION</button>
+  </div>
+</div>
+
+<!-- Boot error -->
+<div id="boot-error" class="hidden"></div>
+
+<noscript><div class="nojs">JavaScript is required to run this simulation.</div></noscript>
+
+<script>
+window.addEventListener('error', function (e) {
+  var box = document.getElementById('boot-error');
+  if (!box) return;
+  box.classList.remove('hidden');
+  box.textContent = 'ENGINE FAULT: ' + (e.message || 'unknown module error') +
+    ' — try appending ?cdn=1 to the URL to load Three.js from CDN.';
+});
+</script>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

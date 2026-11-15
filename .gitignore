@@ -1,0 +1,13 @@
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.tmp
+*.log
+.deploy/
+*.env
+.env
+*_creds*.json
+deploy_local.py
+package-lock.json
