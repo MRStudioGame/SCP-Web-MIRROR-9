@@ -706,6 +706,7 @@ if (new URLSearchParams(location.search).get('selftest') === '1') {
   mainMenu.style.display = 'none';
   hud.classList.remove('hidden');
   resetRun();
+  graceLeft = 0.3;                 // shorten activation grace for CI only
   state = 'PLAYING';
   loopStarted = true;
   clock.start();
