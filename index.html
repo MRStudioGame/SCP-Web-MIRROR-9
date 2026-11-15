@@ -2,18 +2,18 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<meta name="description" content="SCP: MIRROR-9 — WebGL containment simulation. Do not break eye contact.">
-<title>SCP: MIRROR-9 // WEB CONTAINMENT</title>
+<meta name="theme-color" content="#05070a">
+<meta name="description" content="SCP: MIRROR-9 — 第一人称收容行动。保持视线接触，寻找撤离点。">
+<title>SCP: MIRROR-9 // 收容行动</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="./style.css">
 
 <!--
   Three.js r160.1 + addons.
   Default: local modules under ./js/libs (works offline / on GitHub Pages).
-  CDN fallback: append ?cdn=1 to the URL -> jsdelivr-hosted r160.1 modules.
-  Both import maps are declared here so the CDN route is genuinely wired in.
+  CDN fallback: append ?cdn=1 -> jsdelivr-hosted r160.1 modules.
 -->
 <script>
 (function () {
@@ -35,6 +35,12 @@
   window.M9_LIB_MODE = useCdn ? 'cdn' : 'local';
 })();
 </script>
+
+<!-- nipplejs 0.10.2 — 通过 CDN 引入，并配本地镜像兜底。
+     CDN 以 async 加载以免弱网时阻塞首屏；本地镜像同步加载，保证游戏模块
+     启动时摇杆库一定就绪；main.js 另内置无依赖摇杆作为最后一道兜底。 -->
+<script async src="https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.min.js"></script>
+<script src="./js/libs/nipplejs.min.js"></script>
 </head>
 <body>
 
@@ -42,99 +48,121 @@
 <div id="vignette"></div>
 <div id="scanlines"></div>
 
-<!-- HUD -->
+<!-- 竖屏强制提示 -->
+<div id="orientation-overlay">
+  <div class="rotate-icon">↻</div>
+  <h2>请将手机横屏<br>以获得最佳体验</h2>
+  <p>旋转设备后自动继续 · 建议开启全屏 / 添加到主屏幕</p>
+</div>
+
+<!-- ============================ 游戏 HUD ============================ -->
 <div id="hud" class="hidden">
+
   <div class="crosshair" id="crosshair">
     <i></i><i></i><i></i><i></i><b></b>
   </div>
 
   <div id="hud-top">
-    <span class="hud-tag">MIRROR-9 / CONTAINMENT CELL 04</span>
-    <span id="observe-badge" class="badge unseen">UNOBSERVED</span>
+    <span class="hud-tag">MIRROR-9 / 收容单元 04</span>
+    <span id="observe-badge" class="badge unseen">未观测 · 移动中</span>
+  </div>
+
+  <!-- 剧情字幕 -->
+  <div id="subtitle-bar" class="hidden"><span id="subtitle-text"></span></div>
+
+  <div id="evac-hint">
+    <span class="evac-arrow" id="evac-arrow">▲</span>
+    <span>撤离点</span><strong id="evac-dist">-- m</strong>
   </div>
 
   <div id="hud-left">
-    <div class="hud-line"><span>TIME IN CELL</span><strong id="hud-time">00:00</strong></div>
-    <div class="hud-line"><span>PROXIMITY</span><strong id="hud-dist">--.- m</strong></div>
-    <div class="hud-line"><span>BLINK CYCLE</span><strong id="hud-blink">STABLE</strong></div>
+    <div class="hud-line"><span>存活时间</span><strong id="hud-time">00:00</strong></div>
+    <div class="hud-line"><span>目标距离</span><strong id="hud-dist">--.- m</strong></div>
+    <div class="hud-line"><span>眨眼周期</span><strong id="hud-blink">稳定</strong></div>
   </div>
 
   <div id="hud-right">
-    <div class="hud-line"><span>FLASHLIGHT</span><strong id="hud-light">ON</strong></div>
-    <div class="hud-line"><span>AMMO</span><strong id="hud-ammo">∞ / ∞</strong></div>
+    <div class="hud-line"><span>手电筒</span><strong id="hud-light">开启</strong></div>
+    <div class="hud-line"><span>弹药</span><strong id="hud-ammo">∞</strong></div>
   </div>
 
   <div id="hud-bottom">
     <div id="blink-meter"><div id="blink-meter-fill"></div></div>
-    <span class="hud-hint">[WASD] MOVE &nbsp;·&nbsp; [MOUSE] LOOK &nbsp;·&nbsp; [CLICK] FIRE &nbsp;·&nbsp; [F] LIGHT &nbsp;·&nbsp; [ESC] RELEASE</span>
+    <span class="hud-hint" id="hud-hint">[WASD] 移动 · [鼠标] 观察 · [左键] 开火 · [F] 手电</span>
   </div>
 
   <div id="toast"></div>
 </div>
 
-<!-- Blink eyelids -->
-<div id="blink"><div class="lid top"></div><div class="lid bottom"></div></div>
+<!-- ======================= 移动端双端控制系统 ======================= -->
+<div id="touch-controls" class="hidden">
+  <div id="joystick-zone"><span class="zone-label">移动</span></div>
+  <div id="look-zone"><span class="zone-label">滑动观察</span></div>
+  <button id="btn-light" type="button">手电筒</button>
+  <button id="btn-fire"  type="button">开火</button>
+</div>
 
-<!-- Muzzle flash -->
+<!-- 眨眼 / 枪口闪光 -->
+<div id="blink"><div class="lid top"></div><div class="lid bottom"></div></div>
 <div id="muzzle-flash"></div>
 
-<!-- Main menu -->
+<!-- ============================ 主菜单 ============================ -->
 <div id="main-menu">
   <div class="menu-frame">
-    <div class="classify">FOUNDATION RECORD &nbsp;//&nbsp; LEVEL 3 CLEARANCE &nbsp;//&nbsp; DO NOT DISTRIBUTE</div>
+    <div class="classify">基金会档案 &nbsp;//&nbsp; 3 级权限 &nbsp;//&nbsp; 禁止外传</div>
     <div class="rule"></div>
-    <div class="item-no">ITEM&nbsp;#&nbsp;<span>173</span>&nbsp;—&nbsp;WEB SIMULATION</div>
+    <div class="item-no">项目编号&nbsp;&nbsp;<span>173</span>&nbsp;&nbsp;·&nbsp;&nbsp;收容失效</div>
     <h1>SCP:<br><em>MIRROR-9</em></h1>
-    <p class="subtitle">CONTAINMENT BREACH &nbsp;/&nbsp; OBSERVATION PROTOCOL ACTIVE</p>
+    <p class="subtitle">收容突破 / 视觉锁定协议已启动</p>
     <p class="brief">
-      The sculpture moves only when unobserved. Keep the crosshair on it.
-      Blink and it closes the distance. Survive the cell.
+      它只会在无人注视时移动。用准星锁定它，别眨眼。<br>
+      撑过 60 秒，或抵达地图边缘的绿色撤离光圈。
     </p>
-    <button id="start-btn" disabled>
-      <span id="start-label">INITIALIZING ASSETS…</span>
+    <button id="start-btn" type="button">
+      <span id="start-label">正在载入资源…</span>
     </button>
-    <div id="load-status">LOADING ENGINE / MODEL / AUDIO</div>
+    <div id="load-status">正在载入引擎 / 模型 / 音频</div>
     <div class="controls-grid">
-      <div><kbd>W A S D</kbd><span>MOVE</span></div>
-      <div><kbd>MOUSE</kbd><span>AIM / OBSERVE</span></div>
-      <div><kbd>LMB</kbd><span>FIRE</span></div>
-      <div><kbd>F</kbd><span>FLASHLIGHT</span></div>
+      <div><kbd>左侧摇杆</kbd><span>移动</span></div>
+      <div><kbd>右侧滑动</kbd><span>转动视角</span></div>
+      <div><kbd>开火</kbd><span>射击 / 弹痕</span></div>
+      <div><kbd>手电筒</kbd><span>开关照明</span></div>
     </div>
-    <div class="footer-note" id="lib-mode">RENDERER: THREE.JS r160.1 · LOCAL MODULES</div>
+    <div class="footer-note" id="lib-mode">渲染引擎 THREE.JS r160.1 · 本地模块</div>
   </div>
 </div>
 
-<!-- Death overlay -->
+<!-- ======================= 死亡 / 结算界面 ======================= -->
 <div id="game-over">
   <div class="death-inner">
-    <div class="death-code">// TERMINATION EVENT 09-NECK-SNAPSHOT</div>
-    <h2>CONTAINMENT<br>FAILURE</h2>
-    <p id="death-detail">SUBJECT BREACHED VISUAL CONTACT PERIMETER</p>
-    <button id="restart-btn">RE-ENTER CELL</button>
+    <div class="death-code" id="result-code">// 终止事件 09 · 颈椎折断</div>
+    <h2 id="result-title">收容失效</h2>
+    <p id="death-detail">SCP-173 已突破视线锁定范围</p>
+    <button id="restart-btn" type="button">重新开始行动</button>
   </div>
 </div>
 
-<!-- Pause / pointer-lock released -->
+<!-- 暂停（桌面鼠标解锁） -->
 <div id="pause-overlay" class="hidden">
   <div class="pause-inner">
-    <h3>POINTER RELEASED</h3>
-    <p>Visual contact lost. The subject is still in the cell.</p>
-    <button id="resume-btn">RESUME OBSERVATION</button>
+    <h3>观察已中断</h3>
+    <p>视线接触丢失，目标仍在本单元内。</p>
+    <button id="resume-btn" type="button">继续观察</button>
   </div>
 </div>
 
-<!-- Boot error -->
+<!-- 引擎错误 -->
 <div id="boot-error" class="hidden"></div>
 
-<noscript><div class="nojs">JavaScript is required to run this simulation.</div></noscript>
+<noscript><div class="nojs">本游戏需要启用 JavaScript。</div></noscript>
 
 <script>
 window.addEventListener('error', function (e) {
   var box = document.getElementById('boot-error');
   if (!box) return;
   box.classList.remove('hidden');
-  box.textContent = 'ENGINE FAULT: ' + (e.message || 'unknown module error') +
-    ' — try appending ?cdn=1 to the URL to load Three.js from CDN.';
+  box.textContent = '引擎故障：' + (e.message || '模块加载错误') +
+    ' —— 可在网址后加上 ?cdn=1 改用 CDN 载入 Three.js。';
 });
 </script>
 <script type="module" src="./js/main.js"></script>
