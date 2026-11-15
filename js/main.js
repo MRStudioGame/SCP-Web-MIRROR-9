@@ -53,6 +53,7 @@ const SELFTEST     = QS.get('selftest') === '1';
 const FORCE_TOUCH  = QS.get('touch') === '1';
 const FAST_WIN     = QS.get('fast') === '1' || QS.get('evac') === '1';
 const EVAC_TEST    = QS.get('evac') === '1';
+const RELOAD_TEST  = QS.get('reloadtest') === '1';
 const USE_GLB      = QS.get('glb') === '1';
 const USE_HUMANOID = QS.get('humanoid') === '1';
 const AUTOSTART    = QS.get('autostart') === '1';
@@ -480,6 +481,12 @@ function buildSCP173() {
 }
 
 function installEntity(root) {
+  if (scp173 && scp173 !== root) {
+    scene.remove(scp173);
+    const idx = shootables.indexOf(scp173);
+    if (idx >= 0) shootables.splice(idx, 1);
+    scp173.traverse((o) => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
+  }
   scp173 = root;
   root.position.copy(SPAWN_ENTITY);
   root.name = 'SCP173';
@@ -487,7 +494,7 @@ function installEntity(root) {
   root.userData.M9Roughness = root.userData.M9Roughness === undefined ? 0.9 : root.userData.M9Roughness;
   root.userData.M9PartCount = root.userData.M9PartCount || root.children.length;
   scene.add(root);
-  shootables.push(root);
+  if (!shootables.includes(root)) shootables.push(root);
   // 射线判定需要最新的世界矩阵
   root.updateMatrixWorld(true);
 }
@@ -530,37 +537,107 @@ function concreteHumanoid(root) {
   return root;
 }
 
-if (USE_HUMANOID || USE_GLB) {
-  const url = USE_HUMANOID ? './assets/models/humanoid.glb' : './assets/models/SCP173.glb';
-  const gltfLoader = new GLTFLoader(manager);
-  gltfLoader.load(url,
-    (gltf) => installEntity(USE_HUMANOID ? concreteHumanoid(gltf.scene) : gltf.scene),
-    undefined,
-    (err) => { console.warn('[MIRROR-9] GLB 失败，回退程序化人形:', err); installEntity(buildSCP173()); });
-} else {
-  installEntity(buildSCP173());
+/* -------- 怪物骨骼动画状态机（Xbot.glb：idle / walk / run） ---------------- */
+let entityMixer = null, entityActions = {}, entityState = 'idle';
+function setEntityState(name) {
+  if (!entityMixer || !entityActions[name] || entityState === name) return;
+  const cur = entityActions[entityState];
+  const nx = entityActions[name];
+  nx.reset();
+  nx.setEffectiveWeight(1);
+  if (name === 'idle') nx.setLoop(THREE.LoopRepeat, Infinity);
+  else { nx.setLoop(THREE.LoopOnce, 1); nx.clampWhenFinished = true; }
+  nx.play();
+  if (cur) cur.fadeOut(0.18);
+  entityState = name;
 }
+function updateEntityAnim(delta) { if (entityMixer) entityMixer.update(delta); }
+
+/* 把 Xbot 重皮为苍白混凝土 SCP 实体，并接入骨骼动画 + 观测命中代理体 */
+function buildEntityGLB(gltf) {
+  const root = gltf.scene;
+  const concrete = new THREE.MeshStandardMaterial({ color: 0x8d8678, roughness: 0.94, metalness: 0.04 });
+  let meshes = 0;
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material = concrete;
+    o.castShadow = true; o.receiveShadow = true;
+    o.name = 'SCP173_part';
+    meshes++;
+  });
+  root.scale.setScalar(1.12);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const c = new THREE.Vector3(); box.getCenter(c);
+  const hitProxy = new THREE.Mesh(
+    new THREE.BoxGeometry(size.x * 1.05, size.y * 1.02, size.z * 1.10),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
+  );
+  hitProxy.position.copy(c);
+  hitProxy.name = 'SCP173_HitProxy';
+  root.add(hitProxy);
+  entityMixer = new THREE.AnimationMixer(root);
+  for (const clip of gltf.animations) {
+    const n = clip.name.toLowerCase();
+    if (n === 'idle') entityActions.idle = entityMixer.clipAction(clip);
+    else if (n === 'walk') entityActions.walk = entityMixer.clipAction(clip);
+    else if (n === 'run') entityActions.run = entityMixer.clipAction(clip);
+  }
+  if (entityActions.idle) {
+    entityActions.idle.setLoop(THREE.LoopRepeat, Infinity);
+    entityActions.idle.play(); entityState = 'idle';
+  }
+  root.userData.M9ConcreteColor = '0x8d8678';
+  root.userData.M9Roughness = 0.94;
+  root.userData.M9PartCount = meshes + 1;
+  root.userData.M9Source = 'three.js Xbot.glb (Khronos, MIT) · 重皮混凝土 · idle/walk/run 骨骼动画';
+  return root;
+}
+
+/* 异步加载真实开源骨骼模型；成功则无缝替换即时兜底的程序化人形 */
+function loadEntityGLB(url, mode) {
+  const loader = new GLTFLoader(manager);
+  loader.load(url,
+    (gltf) => {
+      try {
+        if (mode === 'humanoid') installEntity(concreteHumanoid(gltf.scene));
+        else if (mode === 'glb') installEntity(gltf.scene);
+        else installEntity(buildEntityGLB(gltf));   // xbot（默认）
+        document.body.setAttribute('data-m9-entity', mode);
+      } catch (e) { console.warn('[MIRROR-9] 实体 GLB 解析失败，保留程序化人形', e); }
+    },
+    undefined,
+    (err) => { console.warn('[MIRROR-9] 实体 GLB 加载失败，保留程序化人形:', err); });
+}
+
+// 立即用程序化人形兜底，保证游戏任何情况下都能开；随后异步升级为真实骨骼模型。
+installEntity(buildSCP173());
+if (USE_HUMANOID) loadEntityGLB('./assets/models/humanoid.glb', 'humanoid');
+else if (USE_GLB) loadEntityGLB('./assets/models/SCP173.glb', 'glb');
+else loadEntityGLB('./assets/models/Xbot.glb', 'xbot');
 
 /* ------------------------------------------------- 第一人称持枪 ViewModel */
 const viewModel = new THREE.Group();
 viewModel.name = 'M9_ViewModel';
-const VM_BASE = new THREE.Vector3(0.36, -0.32, -0.66);
+const VM_BASE = new THREE.Vector3(0, -0.20, -0.50);
+viewModel.position.copy(VM_BASE);
+camera.add(viewModel);
 let vmFlash;
 
-function buildViewModel() {
+/* 程序化占位枪：FpsRig.glb 加载失败时的降级方案 */
+let procGun = null;
+function buildProceduralGun() {
+  procGun = new THREE.Group();
   const dark  = new THREE.MeshStandardMaterial({ color: 0x191b1e, roughness: 0.62, metalness: 0.52 });
   const metal = new THREE.MeshStandardMaterial({ color: 0x2e3339, roughness: 0.44, metalness: 0.78 });
   const grip  = new THREE.MeshStandardMaterial({ color: 0x0e1012, roughness: 0.95 });
   const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
-    viewModel.add(m); return m;
+    const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
+    procGun.add(m); return m;
   };
   const box = (w, h, d, mat, x, y, z, rx, ry, rz) =>
     add(new THREE.BoxGeometry(w, h, d), mat, x, y, z, rx, ry, rz);
-  const cyl = (r, h, mat, x, y, z, rx) =>
-    add(new THREE.CylinderGeometry(r, r, h, 14), mat, x, y, z, rx);
-
+  const cyl = (r, h, mat, x, y, z, rx) => add(new THREE.CylinderGeometry(r, r, h, 14), mat, x, y, z, rx);
   box(0.17, 0.14, 0.44, dark, 0, 0, 0);
   box(0.15, 0.045, 0.42, metal, 0, 0.085, -0.01);
   box(0.13, 0.10, 0.30, grip, 0, -0.025, -0.26);
@@ -574,34 +651,90 @@ function buildViewModel() {
   box(0.055, 0.055, 0.13, metal, 0, 0.14, -0.06);
   box(0.04, 0.04, 0.04, dark, 0, 0.14, -0.24);
   box(0.025, 0.05, 0.025, metal, 0, 0.14, -0.60);
-
-  vmFlash = new THREE.Mesh(
-    new THREE.ConeGeometry(0.075, 0.24, 10),
-    new THREE.MeshBasicMaterial({ color: 0xffd28a, transparent: true, opacity: 0.95,
-                                  depthWrite: false, blending: THREE.AdditiveBlending })
-  );
-  vmFlash.rotation.x = -Math.PI / 2;
-  vmFlash.position.set(0, 0.005, -0.80);
-  vmFlash.visible = false;
-  viewModel.add(vmFlash);
-  viewModel.add(new THREE.PointLight(0xffcf8a, 0, 3));
-
-  viewModel.position.copy(VM_BASE);
-  viewModel.rotation.set(0.02, -0.09, -0.02);
-  camera.add(viewModel);
+  viewModel.add(procGun);
 }
-buildViewModel();
+buildProceduralGun();
+
+/* 枪口闪光（非网格，叠加混合） */
+vmFlash = new THREE.Mesh(
+  new THREE.ConeGeometry(0.075, 0.24, 10),
+  new THREE.MeshBasicMaterial({ color: 0xffd28a, transparent: true, opacity: 0.95,
+                                depthWrite: false, blending: THREE.AdditiveBlending })
+);
+vmFlash.rotation.x = -Math.PI / 2;
+vmFlash.position.set(0, 0.005, -0.80);
+vmFlash.visible = false;
+viewModel.add(vmFlash);
+viewModel.add(new THREE.PointLight(0xffcf8a, 0, 3));
+
+/* 弹药 / 换弹状态机 */
+const MAG_SIZE = 12;
+let ammo = MAG_SIZE;
+let reloading = false;
+let gunMixer = null, gunActions = {}, gunState = 'idle';
+
+function setGunState(name) {
+  if (!gunMixer || !gunActions[name] || gunState === name) return;
+  const cur = gunActions[gunState], nx = gunActions[name];
+  nx.reset();
+  nx.setEffectiveWeight(1);
+  if (name === 'idle') nx.setLoop(THREE.LoopRepeat, Infinity);
+  else { nx.setLoop(THREE.LoopOnce, 1); nx.clampWhenFinished = true; }
+  nx.play();
+  if (cur) cur.fadeOut(0.10);
+  gunState = name;
+}
+function updateGunAnim(delta) { if (gunMixer) gunMixer.update(delta); }
+
+/* 加载真实开源 FP 枪械 rig（FpsRig.glb：手臂 + AKM，含 Idle / Reload / Shoot 骨骼动画） */
+function loadGunGLB() {
+  const loader = new GLTFLoader(manager);
+  loader.load('./assets/models/FpsRig.glb',
+    (gltf) => {
+      try {
+        if (procGun) { viewModel.remove(procGun); procGun = null; }
+        const rig = gltf.scene;
+        // 上游仓库验证过的 FP 变换：缩放并旋转使枪口朝前（-Z）
+        rig.scale.setScalar(0.08);
+        rig.rotation.set(0, Math.PI / 2, 0);
+        viewModel.add(rig);
+        gunMixer = new THREE.AnimationMixer(rig);
+        for (const clip of gltf.animations) {
+          const n = clip.name.toLowerCase();
+          if (n.includes('idle'))    gunActions.idle    = gunMixer.clipAction(clip);
+          else if (n.includes('reload')) gunActions.reload = gunMixer.clipAction(clip);
+          else if (n.includes('shoot'))  gunActions.shoot  = gunMixer.clipAction(clip);
+        }
+        if (gunActions.idle) {
+          gunActions.idle.setLoop(THREE.LoopRepeat, Infinity);
+          gunActions.idle.play(); gunState = 'idle';
+        }
+        gunMixer.addEventListener('finished', (e) => {
+          if (e.action === gunActions.shoot || e.action === gunActions.reload) setGunState('idle');
+        });
+        document.body.setAttribute('data-m9-gun', 'fpsrig');
+        console.info('[MIRROR-9] FpsRig.glb 已加载 · 骨骼动画:',
+                     Object.keys(gunActions).join(' / '));
+      } catch (err) {
+        console.warn('[MIRROR-9] FpsRig 解析失败，保留程序化枪:', err);
+      }
+    },
+    undefined,
+    (err) => { console.warn('[MIRROR-9] FpsRig.glb 加载失败，保留程序化枪:', err); });
+}
+loadGunGLB();
 
 function updateViewModel(delta) {
+  updateGunAnim(delta);
   recoil = Math.max(0, recoil - delta * 7.5);
   const moving = Math.min(1, moveVelocity.length() / WALK_SPEED);
-  const bob = Math.sin(performance.now() * 0.011) * 0.008 * moving;
+  const bob = Math.sin(performance.now() * 0.011) * 0.010 * moving;
   viewModel.position.set(
     VM_BASE.x + Math.sin(performance.now() * 0.0055) * 0.004 * moving,
-    VM_BASE.y + bob - recoil * 0.022,
-    VM_BASE.z + recoil * 0.13
+    VM_BASE.y + bob - recoil * 0.020,
+    VM_BASE.z + recoil * 0.10
   );
-  viewModel.rotation.set(0.02 + recoil * 0.20, -0.09, -0.02 + recoil * 0.05);
+  viewModel.rotation.set(recoil * 0.18, -recoil * 0.05, 0);
   vmFlash.visible = recoil > 0.55;
   if (vmFlash.visible) vmFlash.scale.setScalar(0.7 + recoil * 0.7);
 }
@@ -652,6 +785,7 @@ document.addEventListener('keydown', (e) => {
     case 'KeyA': case 'ArrowLeft':  keys.left = true; break;
     case 'KeyD': case 'ArrowRight': keys.right = true; break;
     case 'KeyF': toggleFlashlight(); break;
+    case 'KeyR': startReload(); break;
     case 'Space': if (state === 'PLAYING') fire(); break;
   }
 });
@@ -918,7 +1052,9 @@ function spawnBulletHole(hit) {
 }
 
 function fire() {
-  if (state !== 'PLAYING') return;
+  if (state !== 'PLAYING' || reloading) return;
+  if (ammo <= 0) { startReload(); return; }
+  ammo--;
   playOneShot('gunshot', 0.55);
   recoil = 1;
   muzzleEl.classList.remove('fire');
@@ -926,6 +1062,7 @@ function fire() {
   muzzleEl.classList.add('fire');
   crosshair.classList.add('fired');
   setTimeout(() => crosshair.classList.remove('fired'), 100);
+  setGunState('shoot');          // 真实骨骼开火动画（绑定到手部）
 
   const flashLight = new THREE.PointLight(0xffd9a0, 3.2, 9, 1.5);
   flashLight.position.set(0.25, -0.18, -0.7);
@@ -937,7 +1074,26 @@ function fire() {
   const hits = raycaster.intersectObjects(shootables, true);
   if (hits.length) spawnBulletHole(hits[0]);
   if (window.__M9_SELFTEST) window.__M9_SELFTEST.shotsFired++;
+  if (ammo <= 0) startReload();
 }
+
+/* 换弹：播放真实骨骼 Reload 动画，期间锁定开火，完成后补满弹匣 */
+function startReload() {
+  if (reloading || ammo === MAG_SIZE) return;
+  reloading = true;
+  setGunState('reload');
+  showToast('// 换弹中…', 1.2);
+  const clip = gunActions.reload && gunActions.reload.getClip && gunActions.reload.getClip();
+  const dur = clip ? clip.duration * 1000 + 140 : 1900;
+  setTimeout(() => {
+    reloading = false;
+    ammo = MAG_SIZE;
+    updateAmmoHud();
+    showToast('// 弹匣已满', 0.9);
+  }, dur);
+}
+
+function updateAmmoHud() { hudAmmo.textContent = ammo + ' / ' + MAG_SIZE; }
 
 document.addEventListener('mousedown', (e) => {
   if (e.button !== 0 || state !== 'PLAYING') return;
@@ -1011,6 +1167,7 @@ function resetRun() {
   flashlight.visible = true; nearFill.visible = true;
   hudLight.textContent = '开启';
   btnLight.classList.remove('off');
+  ammo = MAG_SIZE; reloading = false; updateAmmoHud();
   gameOver.classList.remove('active', 'win');
   pauseOverlay.classList.add('hidden');
   probeLookedAway = false;
@@ -1173,6 +1330,13 @@ function updateEntity(delta) {
     sounds.scrape.volume = Math.min(0.42, sounds.scrape.volume + delta * 1.8);
   }
 
+  // 怪物骨骼动画：被注视 → 站定(idle)；未观测 → 按移动速度播 walk / run
+  if (entityMixer) {
+    if (isObserved) setEntityState('idle');
+    else setEntityState(entityVelocity.length() > 4 ? 'run' : 'walk');
+    updateEntityAnim(delta);
+  }
+
   const dx = scp173.position.x - camera.position.x;
   const dz = scp173.position.z - camera.position.z;
   const dist = Math.hypot(dx, dz);
@@ -1242,7 +1406,7 @@ function updateHud(delta) {
   if (hudAccum < 0.1) return;
   hudAccum = 0;
   hudTime.textContent = fmtTime(survivalTime) + ' / ' + fmtTime(EXTRACT_SECONDS);
-  hudAmmo.textContent = '∞';
+  updateAmmoHud();
 }
 function updateDecals(delta) {
   for (let i = decals.length - 1; i >= 0; i--) {
@@ -1306,6 +1470,19 @@ function loop() {
     st.flashlightTargetParent = flashlight.target.parent === camera ? 'camera' : 'other';
     st.sceneHasCamera = camera.parent === scene;
     st.fullscreenCalls = fullscreenCalls;
+    st.gunSource = document.body.getAttribute('data-m9-gun') || 'procedural';
+    st.gunAnims = gunActions ? Object.keys(gunActions).join(',') : '';
+    st.gunMixer = !!gunMixer;
+    st.entitySource = scp173 ? scp173.userData.M9Source : '';
+    st.entityMode = document.body.getAttribute('data-m9-entity') || 'procedural';
+    st.entityAnims = entityActions ? Object.keys(entityActions).join(',') : '';
+    st.entityMixer = !!entityMixer;
+    st.ammo = ammo;
+    st.reloading = reloading;
+    const _gp = new THREE.Vector3();
+    viewModel.getWorldPosition(_gp);
+    camera.worldToLocal(_gp);
+    st.gunCam = [Number(_gp.x.toFixed(2)), Number(_gp.y.toFixed(2)), Number(_gp.z.toFixed(2))];
     st.touchYawDelta = Number(window.__M9_TOUCH_YAW_DELTA.toFixed(3));
     st.viewDistance = VIEW_DISTANCE;
     if (scp173) {
@@ -1386,6 +1563,7 @@ if (SELFTEST) {
   controls.isLocked = false;
   if (FORCE_TOUCH) joy.y = EVAC_TEST ? 0 : 1;   // 验证摇杆 -> Vector3 移动路径
   requestAnimationFrame(loop);
+  if (RELOAD_TEST) setTimeout(() => { try { startReload(); } catch (_) {} }, 1200);
 }
 
 // ?autostart=1 走真实 Start 按钮 click 路径，用于验证全屏 API 调用
@@ -1393,7 +1571,7 @@ if (AUTOSTART && !SELFTEST) startBtn.click();
 
 /* 调试接口（无副作用，便于自动化验证） */
 window.__M9_DEBUG = {
-  joy, fire, toggleFlashlight, enterFullscreen,
+  joy, fire, toggleFlashlight, enterFullscreen, startReload,
   getPos: () => camera.position.toArray(),
   getYaw: () => yaw,
   getState: () => state,
